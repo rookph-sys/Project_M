@@ -12,6 +12,7 @@
 ## مستندات
 
 - [GDD — PvE v0.1](docs/GDD-PvE-v0.1.md) — سند طراحی کامل
+- [Open Questions](docs/OPEN-QUESTIONS.md) — چیزهایی که سند کم دارد
 
 ## اولویت فعلی
 
