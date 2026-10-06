@@ -1,49 +1,28 @@
-[Ll]ibrary/
-[Tt]emp/
-[Oo]bj/
-[Bb]uild/
-[Bb]uilds/
-[Ll]ogs/
-[Uu]ser[Ss]ettings/
-[Mm]emoryCaptures/
-[Rr]ecordings/
+# Godot 4
+.godot/
+/android/
 
-# Asset Store / package caches
-/[Aa]ssets/AssetStoreTools*
-/[Aa]ssets/Plugins/Editor/JetBrains*
+# Exports
+export_presets.cfg
+/build/
+/builds/
+/export/
+
+# Mono / .NET
+.mono/
+data_*/
+mono_crash.*.json
+bin/
+obj/
+*.user
 
 # IDE
 .vs/
 .idea/
 .vscode/
-*.csproj
-*.unityproj
 *.sln
-*.suo
-*.user
-*.userprefs
-*.pidb
-*.booproj
-*.svd
-*.pdb
-*.mdb
-*.opendb
-*.VC.db
+*.csproj.user
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Builds
-*.apk
-*.aab
-*.unitypackage
-*.app
-
-# Crashlytics
-crashlytics-build.properties
-
-# Unity generated
-sysinfo.txt
-ExportedObj/
-.consulo/
