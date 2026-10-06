@@ -1,0 +1,32 @@
+; Project Marbles — Phase 1 prototype
+; Physics values are the contract. See docs/SPEC-PvE-v0.3.md §2.
+
+config_version=5
+
+[application]
+
+config/name="Project Marbles"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.4", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[physics]
+
+common/physics_ticks_per_second=120
+common/max_physics_steps_per_frame=16
+common/physics_jitter_fix=0.0
+3d/physics_engine="Jolt Physics"
+3d/default_gravity=9.81
+3d/default_linear_damp=0.0
+3d/default_angular_damp=0.0
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=2
+environment/defaults/default_clear_color=Color(0.04, 0.04, 0.05, 1)

@@ -26,3 +26,6 @@ obj/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local calibration scratch
+shot_*.png

@@ -1,0 +1,66 @@
+class_name Levels
+extends RefCounted
+
+## Level data. Positions are Vector2(X, Z) in arena space (§65).
+##
+## ponytail: four levels, not the ten the vertical slice calls for. These four
+## cover both implemented modes and give every marble a reason to exist, which
+## is what the Go/No-Go gate (§87) actually needs. The rest is content, not
+## engineering — add it once the gate passes.
+
+const ALL := [
+	{
+		"name": "First Flick",
+		"mode": "ringer",
+		"bag": ["standard", "standard", "standard", "standard",
+				"standard", "standard", "standard", "standard"],
+		"targets": [Vector2(-0.22, 0.00), Vector2(0.22, 0.00),
+					Vector2(0.00, 0.22), Vector2(0.00, -0.22)],
+		"holes": [],
+		"bumpers": [],
+		"goal": 2,
+		"shots": 8,
+		"hint": "Click in the blue strip to place. Then drag back from the marble and release.",
+	},
+	{
+		"name": "Break the Cluster",
+		"mode": "ringer",
+		"bag": ["standard", "standard", "standard", "standard",
+				"standard", "standard", "standard", "standard"],
+		"targets": [Vector2(-0.32, 0.00), Vector2(0.32, 0.00),
+					Vector2(-0.16, 0.28), Vector2(0.16, 0.28),
+					Vector2(-0.16, -0.28), Vector2(0.16, -0.28)],
+		"holes": [],
+		"bumpers": [],
+		"goal": 3,
+		"shots": 8,
+		"hint": "Six targets, three to clear. Angle matters more than power.",
+	},
+	{
+		"name": "First Hole",
+		"mode": "holes",
+		"bag": ["standard", "standard", "standard", "standard",
+				"standard", "precision", "precision", "sticky"],
+		"targets": [Vector2(-0.65, 0.20), Vector2(0.65, 0.20), Vector2(0.00, -0.45)],
+		"holes": [Vector2(0.00, 0.70)],
+		"bumpers": [],
+		"goal": 2,
+		"shots": 8,
+		"hint": "Sink two reds. Your own marble down the hole costs you 250.",
+	},
+	{
+		"name": "Final Table",
+		"mode": "ringer",
+		"bag": ["standard", "standard", "heavy", "rubber",
+				"precision", "sticky", "magnet", "standard"],
+		"targets": [Vector2(0.00, 0.00),
+					Vector2(0.24, 0.00), Vector2(-0.24, 0.00),
+					Vector2(0.12, 0.22), Vector2(-0.12, 0.22),
+					Vector2(0.12, -0.22), Vector2(-0.12, -0.22)],
+		"holes": [],
+		"bumpers": [Vector2(-0.85, 0.00), Vector2(0.85, 0.00)],
+		"goal": 4,
+		"shots": 8,
+		"hint": "Every marble type, two bumpers. Press 1-8 to pick before placing.",
+	},
+]
