@@ -29,3 +29,5 @@ Thumbs.db
 
 # Local calibration scratch
 shot_*.png
+builds/
+*.avi
