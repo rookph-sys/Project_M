@@ -267,6 +267,8 @@ func _build_static_world() -> void:
 	rmat.emission_energy_multiplier = 0.45
 	ring.material_override = rmat
 	ring.position = Vector3(0, 0.004, 0)
+	_ring_mesh = ring
+	_ring_mat = rmat
 	add_child(ring)
 
 	_lz_vis = MeshInstance3D.new()
@@ -383,6 +385,8 @@ func load_level(idx: int) -> void:
 	_aiming = false
 	_slowmo_fired = false
 	_end_slowmo()
+	_pending_pops.clear()
+	_cascade_running = false
 
 	for p in level["holes"]:
 		holes.append(p)
@@ -583,6 +587,7 @@ func submit_shot(place: Vector2, dir: Vector3, power: float,
 
 
 func _cancel_placement() -> void:
+	_audio.stop_charge()
 	if _held and is_instance_valid(_held):
 		marbles.erase(_held)
 		_held.queue_free()
@@ -596,6 +601,7 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 	_held = null
 
 	_combo_in_shot = 0
+	_pending_pops.clear()
 	_shot_ctx = {
 		"marble": m,
 		"marble_id": m.def_id,
@@ -622,7 +628,7 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 		prog.bump("shots_fired")
 		prog.note_marble_use(m.def_id)
 		_advance_selection()
-	_audio.impact(1.2 + _aim_power * 2.5)
+	_audio.release(_aim_power)
 	_aim_power = 0.0      # otherwise the power bar stays full after the shot
 	state = St.RESOLVE
 	_resolve_time = 0.0
@@ -644,6 +650,7 @@ func _advance_selection() -> void:
 
 func _process(delta: float) -> void:
 	_tick_slowmo()
+	_update_danger()
 	# One source of truth for which layer is showing.
 	if _menu:
 		_hud.visible = not _menu.visible
@@ -699,6 +706,9 @@ func _update_aim() -> void:
 		_aim_line.visible = false
 	_span_line(_pull_line, origin, _mouse_world)
 	_tint_aim(_aim_power)
+	_audio.charge(_aim_power)
+	# The marble tenses as you draw back — anticipation before the release.
+	_held.squash(-_aim_dir, _aim_power * 0.35)
 
 
 ## Green at a feather touch, red at full power — the one piece of the aim
@@ -745,8 +755,12 @@ func _physics_process(delta: float) -> void:
 
 	if moving == 0:
 		_stable_time += delta
-		if _stable_time >= RESOLVE_STABLE:
-			_end_shot()
+		if _stable_time >= RESOLVE_STABLE and not _cascade_running:
+			# Play the scoring chain out before deciding anything.
+			if _pending_pops.is_empty():
+				_end_shot()
+			else:
+				_run_cascade(_end_shot)
 	else:
 		_stable_time = 0.0
 
@@ -770,8 +784,7 @@ func _check_captures() -> void:
 			if is_versus and m.owner_id >= 0:
 				match_points[1 - m.owner_id] += 1
 				if m.owner_id == ACTOR_AI:
-					score += 1000
-					match_stats["knockouts"] += 1
+					match_stats["knockouts"] += 1      # points awarded by the cascade
 				else:
 					score -= 250
 					match_stats["marbles_lost"] += 1
@@ -789,7 +802,6 @@ func _check_captures() -> void:
 				_audio.sink()
 				if m.is_target and level["mode"] == "holes":
 					match_stats["sinks"] += 1
-					score += 1000
 					_shot_ctx["sinks"] = _shot_ctx.get("sinks", 0) + 1
 					_pop(p, 1000, Color(0.5, 0.85, 1.0))
 				elif not m.is_target:
@@ -811,16 +823,20 @@ func _check_captures() -> void:
 					# Only one shot resolves at a time, so whoever is on turn
 					# is the one who caused this.
 					match_points[turn_actor] += 1
-					score += 1000 if turn_actor == ACTOR_PLAYER else 0
-				else:
-					score += 1000
 				if turn_actor == ACTOR_PLAYER:
 					match_stats["ring_outs"] += 1
 					var by: String = _shot_ctx.get("marble_id", "")
 					if by != "":
 						match_stats["ring_out_by"][by] = match_stats["ring_out_by"].get(by, 0) + 1
 				_shot_ctx["ring_outs"] = _shot_ctx.get("ring_outs", 0) + 1
-				_pop(p, 1000, Color(1.0, 0.85, 0.3))
+				if is_versus and turn_actor != ACTOR_PLAYER:
+					# The opponent scored: show it, but it is not your score.
+					_juice.popup(p, "AI +1", HALO_AI, 0)
+					_cam_shake = maxf(_cam_shake, 0.5)
+					_audio.score_event(0.7)
+					_ring_pulse()
+				else:
+					_pop(p, 1000, Color(1.0, 0.85, 0.3))
 
 
 func _pop(at: Vector3 = Vector3.ZERO, points: int = 1000, color: Color = Color(1.0, 0.85, 0.3)) -> void:
@@ -886,6 +902,8 @@ func _finish(won: bool) -> void:
 		"won": won, "score": score, "medals": earned,
 		"unlocked": unlocked_now, "news": news,
 	}
+	if won:
+		_celebrate()
 	_audio.fanfare() if won else _audio.failure()
 	_show_result_banner()
 
@@ -1495,17 +1513,55 @@ func _impact_feedback(a: Marble, b: Marble, speed: float) -> void:
 
 
 ## A scoring event: the number flies, the combo climbs, the screen reacts.
+## Scoring events are queued, not shown. A five-marble break resolves inside a
+## few physics ticks, so firing all five popups at once reads as one mushy
+## event. Draining them a beat apart is what turns a good shot into a payoff
+## you watch — it is most of what makes Balatro's scoring feel the way it does.
 func _score_feedback(at: Vector3, points: int, color: Color) -> void:
+	_pending_pops.append({"at": at, "points": points, "color": color})
+
+
+const CASCADE_GAP := 0.26          # seconds between links in a chain
+const CASCADE_FIRST := 0.10        # a shorter beat before the first
+
+var _pending_pops: Array = []
+var _cascade_running := false
+
+
+## Plays the queue out, then hands back to whoever asked.
+func _run_cascade(done: Callable) -> void:
+	_cascade_running = true
+	var first := true
+	while not _pending_pops.is_empty():
+		await get_tree().create_timer(CASCADE_FIRST if first else CASCADE_GAP).timeout
+		first = false
+		if not is_inside_tree():
+			return
+		_show_pop(_pending_pops.pop_front())
+	# A last beat so the final number is read before the banner lands on it.
+	await get_tree().create_timer(0.30).timeout
+	_cascade_running = false
+	if is_inside_tree():
+		done.call()
+
+
+func _show_pop(e: Dictionary) -> void:
 	_combo_in_shot += 1
-	_juice.popup(at, "+%d" % points, color, _combo_in_shot - 1)
+	var at: Vector3 = e["at"]
+	var color: Color = e["color"]
+	# Score is added here, not when the marble crossed the line, so the HUD
+	# count-up climbs in step with the popups instead of racing ahead of them.
+	score += e["points"]
+
+	_juice.popup(at, "+%d" % e["points"], color, _combo_in_shot - 1)
 	_juice.combo(_combo_in_shot)
 	_juice.flash(color, 0.05 + _combo_in_shot * 0.02)
 	_juice.hit_stop(HIT_STOP_LIGHT + _combo_in_shot * 0.012)
 	_cam_shake = maxf(_cam_shake, 0.8 + _combo_in_shot * 0.25)
 	_cam_zoom = maxf(_cam_zoom, 0.3)
-	# Each one in a chain rings a step higher — the escalation is the reward.
-	_audio.score_event(0.9 + _combo_in_shot * 0.14)
-	_spawn_sparks(at, color, 1.0)
+	# Each link rings a step higher — the escalation is the reward.
+	_audio.score_event(0.9 + _combo_in_shot * 0.18)
+	_spawn_sparks(at, color, 1.0 + _combo_in_shot * 0.25)
 
 
 func _spawn_sparks(at: Vector3, color: Color, strength: float) -> void:
@@ -1563,3 +1619,45 @@ func _update_camera(delta: float) -> void:
 	var toward := (Vector3.ZERO - _cam_home).normalized() * _cam_zoom * 0.45
 	_cam.position = _cam_home + shake + toward \
 		+ _cam_kick * _settings.screen_shake
+
+
+# ------------------------------------------------------- more feedback ----
+
+var _ring_mesh: MeshInstance3D
+var _ring_mat: StandardMaterial3D
+
+
+## The ring reacts when something crosses it, so the boundary feels like a
+## thing that was touched rather than an invisible rule.
+func _ring_pulse() -> void:
+	if _ring_mat == null:
+		return
+	_ring_mat.emission_energy_multiplier = 3.2
+	var t := create_tween()
+	t.tween_property(_ring_mat, "emission_energy_multiplier", 0.45, 0.45) \
+		.set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+
+
+## §2.4 anticipation: a marble about to be hit hard should look nervous. Any
+## target sitting close to the line glows, so near-misses read as near-misses
+## instead of as nothing happening.
+func _update_danger() -> void:
+	if not has_ring:
+		return
+	for t in targets:
+		if not is_instance_valid(t) or t.state != Marble.State.RESERVE:
+			continue
+		var d := Vector2(t.position.x, t.position.z).length() / RING_OUT_DIST
+		t.set_danger(clampf((d - 0.72) / 0.28, 0.0, 1.0))
+
+
+## Level clear: a burst from the middle of the table.
+func _celebrate() -> void:
+	for i in 3:
+		var at := Vector3(randf_range(-0.8, 0.8), MarbleData.RADIUS, randf_range(-0.6, 0.6))
+		get_tree().create_timer(0.12 * i).timeout.connect(func():
+			if is_inside_tree():
+				_spawn_sparks(at, Color(1.0, 0.85, 0.35), 2.6)
+				_juice.flash(Color(1.0, 0.9, 0.5), 0.07))
+	_cam_shake = maxf(_cam_shake, 1.4)
+	_cam_zoom = maxf(_cam_zoom, 0.5)

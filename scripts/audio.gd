@@ -26,6 +26,7 @@ func _ready() -> void:
 		add_child(p)
 		_players.append(p)
 	_build_event_sounds()
+	_build_aim_sounds()
 
 
 ## Exponentially decaying sine with a noise transient — reads as a hard
@@ -177,3 +178,76 @@ func _pad_loop() -> AudioStreamWAV:
 	w.loop_begin = 0
 	w.loop_end = n
 	return w
+
+
+# ------------------------------------------------------- aim and release ----
+
+var _charge: AudioStreamPlayer
+var _charge_tone: AudioStreamWAV
+var _whoosh: AudioStreamWAV
+
+
+func _build_aim_sounds() -> void:
+	# A held tone whose pitch is driven by draw strength — the ear tracks a
+	# rising pitch far better than a bar it has to look away from the table at.
+	var n := int(RATE * 1.0)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		var t := float(i) / RATE
+		var v: float = sin(TAU * 220.0 * t) * 0.6 + sin(TAU * 330.0 * t) * 0.25
+		data.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 7000.0))
+	_charge_tone = AudioStreamWAV.new()
+	_charge_tone.format = AudioStreamWAV.FORMAT_16_BITS
+	_charge_tone.mix_rate = RATE
+	_charge_tone.stereo = false
+	_charge_tone.data = data
+	_charge_tone.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	_charge_tone.loop_begin = 0
+	_charge_tone.loop_end = n
+
+	# Filtered noise sweep for the flick itself.
+	var wn := int(RATE * 0.22)
+	var wd := PackedByteArray()
+	wd.resize(wn * 2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99
+	var last := 0.0
+	for i in wn:
+		var t := float(i) / RATE
+		var env: float = exp(-t / 0.055)
+		last = lerpf(last, rng.randfn(0.0, 1.0), 0.35)
+		wd.encode_s16(i * 2, int(clampf(last * env, -1.0, 1.0) * 16000.0))
+	_whoosh = AudioStreamWAV.new()
+	_whoosh.format = AudioStreamWAV.FORMAT_16_BITS
+	_whoosh.mix_rate = RATE
+	_whoosh.stereo = false
+	_whoosh.data = wd
+
+	_charge = AudioStreamPlayer.new()
+	_charge.stream = _charge_tone
+	add_child(_charge)
+
+
+## Called every frame while drawing back. `power` is 0..1.
+func charge(power: float) -> void:
+	if _charge == null:
+		return
+	if power <= 0.02:
+		if _charge.playing:
+			_charge.stop()
+		return
+	if not _charge.playing:
+		_charge.play()
+	_charge.pitch_scale = 0.75 + power * 1.25
+	_charge.volume_db = linear_to_db(clampf(0.05 + power * 0.22, 0.0, 1.0))
+
+
+func stop_charge() -> void:
+	if _charge and _charge.playing:
+		_charge.stop()
+
+
+func release(power: float) -> void:
+	stop_charge()
+	_play(_whoosh, 0.8 + power * 0.7, 0.25 + power * 0.5)

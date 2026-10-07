@@ -426,3 +426,14 @@ func _update_squash() -> void:
 	var across := 1.0 + k * 0.55
 	var b := Basis.looking_at(_squash_axis, Vector3.UP)
 	_mesh.transform = Transform3D(b.scaled(Vector3(across, across, along)), Vector3.ZERO)
+
+
+## How exposed this marble is — drives a warning glow as it nears the line.
+func set_danger(level: float) -> void:
+	if _mesh == null or _mesh.material_override == null:
+		return
+	var mat: StandardMaterial3D = _mesh.material_override
+	var pulse: float = 0.0
+	if level > 0.01:
+		pulse = level * (0.6 + 0.4 * sin(Time.get_ticks_msec() * 0.012))
+	mat.emission_energy_multiplier = 0.12 + pulse * 1.6

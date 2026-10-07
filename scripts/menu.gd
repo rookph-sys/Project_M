@@ -95,7 +95,22 @@ func _button(text: String, enabled: bool = true) -> Button:
 	b.custom_minimum_size = Vector2(0, 46)
 	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	b.add_theme_font_size_override("font_size", 18)
+	if enabled:
+		_add_hover_lift(b)
 	return b
+
+
+## Rows lean toward the cursor. Cheap, and it makes a list of buttons feel like
+## objects rather than regions of a page.
+func _add_hover_lift(b: Button) -> void:
+	b.pivot_offset = Vector2(0, 23)
+	b.mouse_entered.connect(func():
+		var t := b.create_tween()
+		t.tween_property(b, "scale", Vector2(1.012, 1.10), 0.10) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+	b.mouse_exited.connect(func():
+		var t := b.create_tween()
+		t.tween_property(b, "scale", Vector2.ONE, 0.12))
 
 
 # ----------------------------------------------------------- level select ----
