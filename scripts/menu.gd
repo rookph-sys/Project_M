@@ -8,11 +8,12 @@ extends CanvasLayer
 
 signal play_requested(level_index: int, bag: Array)
 
-enum Screen { LEVELS, DECK, COLLECTION }
+enum Screen { LEVELS, DECK, COLLECTION, SETTINGS }
 
 const SLOTS := 8
 
 var prog: Progression
+var settings: Settings
 var screen: Screen = Screen.LEVELS
 var _level_index := 0
 var _bag: Array[String] = []
@@ -24,8 +25,9 @@ var _body: VBoxContainer
 var _footer: Label
 
 
-func setup(progression: Progression) -> void:
+func setup(progression: Progression, opts: Settings) -> void:
 	prog = progression
+	settings = opts
 	layer = 20
 	_build()
 	show_levels()
@@ -104,7 +106,7 @@ func show_levels() -> void:
 	_clear_body()
 	_title.text = "PROJECT MARBLES"
 	_subtitle.text = "Chapter 1 — %d of %d cleared" % [_cleared_count(), Levels.count()]
-	_footer.text = "[C] collection      [Esc] back      click a level to play"
+	_footer.text = "[C] collection      [O] settings      [Esc] back      click a level to play"
 
 	for i in Levels.count():
 		var lvl: Dictionary = Levels.ALL[i]
@@ -324,14 +326,126 @@ func _unhandled_input(ev: InputEvent) -> void:
 	if not visible:
 		return
 	if ev.is_action_pressed("cancel_menu"):
+		_wipe_armed = false
 		match screen:
 			Screen.DECK: show_levels()
 			Screen.COLLECTION: show_levels()
+			Screen.SETTINGS: show_levels()
 			_: pass
 		get_viewport().set_input_as_handled()
 	elif ev.is_action_pressed("collection") and screen == Screen.LEVELS:
 		show_collection()
 		get_viewport().set_input_as_handled()
+	elif ev.is_action_pressed("settings") and screen == Screen.LEVELS:
+		show_settings()
+		get_viewport().set_input_as_handled()
 	elif ev.is_action_pressed("confirm") and screen == Screen.DECK:
 		_on_start()
 		get_viewport().set_input_as_handled()
+
+
+# --------------------------------------------------------------- settings ----
+#
+# §71 wanted these from the start rather than bolted on at the end, because
+# retrofitting a screen-shake slider means auditing every place that shakes.
+
+func show_settings() -> void:
+	screen = Screen.SETTINGS
+	visible = true
+	_clear_body()
+	_title.text = "SETTINGS"
+	_subtitle.text = "Accessibility and feel"
+	_footer.text = "[Esc] back      changes save immediately"
+
+	_slider("Screen shake", settings.screen_shake, 0.0, 1.0,
+		func(v): settings.screen_shake = v)
+	_toggle("Slow motion on the winning shot", settings.slow_motion,
+		func(v): settings.slow_motion = v)
+	_choice("Aim guide", ["Off", "Short", "Long"], int(settings.aim_line),
+		func(v): settings.aim_line = v as Settings.AimLine)
+	_toggle("Colourblind markers on marbles", settings.colorblind,
+		func(v): settings.colorblind = v)
+	_slider("Text size", settings.text_scale, 0.8, 1.6,
+		func(v): settings.text_scale = v)
+	_slider("Volume", settings.master_volume, 0.0, 1.0,
+		func(v): settings.master_volume = v; settings.apply_audio())
+	_toggle("Pause while the opponent thinks", settings.ai_think_visible,
+		func(v): settings.ai_think_visible = v)
+
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 20)
+	_body.add_child(gap)
+	var wipe := _button("Erase all campaign progress")
+	wipe.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	wipe.pressed.connect(_on_wipe_requested)
+	_body.add_child(wipe)
+
+
+var _wipe_armed := false
+
+## Erasing a campaign is not undoable, so it takes two deliberate clicks.
+func _on_wipe_requested() -> void:
+	if not _wipe_armed:
+		_wipe_armed = true
+		_footer.text = "[Esc] back      click again to confirm — this cannot be undone"
+		return
+	_wipe_armed = false
+	prog.wipe()
+	show_levels()
+
+
+func _row(label: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	var l := _label(17, Color(0.82, 0.86, 0.95))
+	l.text = label
+	l.custom_minimum_size = Vector2(380, 40)
+	row.add_child(l)
+	_body.add_child(row)
+	return row
+
+
+func _slider(label: String, value: float, lo: float, hi: float, on_set: Callable) -> void:
+	var row := _row(label)
+	var s := HSlider.new()
+	s.min_value = lo
+	s.max_value = hi
+	s.step = 0.05
+	s.value = value
+	s.custom_minimum_size = Vector2(300, 32)
+	var readout := _label(16, Color(0.55, 0.62, 0.75))
+	readout.text = "%d%%" % roundi(value * 100.0)
+	s.value_changed.connect(func(v):
+		on_set.call(v)
+		readout.text = "%d%%" % roundi(v * 100.0)
+		settings.save())
+	row.add_child(s)
+	row.add_child(readout)
+
+
+func _toggle(label: String, value: bool, on_set: Callable) -> void:
+	var row := _row(label)
+	var b := Button.new()
+	b.toggle_mode = true
+	b.button_pressed = value
+	b.text = "ON" if value else "OFF"
+	b.custom_minimum_size = Vector2(90, 36)
+	b.toggled.connect(func(v):
+		b.text = "ON" if v else "OFF"
+		on_set.call(v)
+		settings.save())
+	row.add_child(b)
+
+
+func _choice(label: String, options: Array, index: int, on_set: Callable) -> void:
+	var row := _row(label)
+	for i in options.size():
+		var b := Button.new()
+		b.text = options[i]
+		b.custom_minimum_size = Vector2(90, 36)
+		b.disabled = i == index
+		b.pressed.connect(func():
+			on_set.call(i)
+			settings.save()
+			show_settings())
+		row.add_child(b)

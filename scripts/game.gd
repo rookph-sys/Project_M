@@ -89,20 +89,26 @@ var _dynamic: Node3D
 var _debug := false
 var _menu: CanvasLayer = null
 var _pending_bag: Array[String] = []
+var _settings := Settings.new()
 
 
 func _ready() -> void:
 	prog.load()
+	_settings.load()
 	_register_actions()
 	_build_static_world()
 	_audio = MarbleAudio.new()
 	add_child(_audio)
+	_settings.apply_audio()
+	_audio.start_music(_settings.music_volume)
 	_hud = preload("res://scripts/hud.gd").new()
+	_hud.text_scale = _settings.text_scale
 	add_child(_hud)
 	_menu = preload("res://scripts/menu.gd").new()
 	add_child(_menu)
-	_menu.setup(prog)
+	_menu.setup(prog, _settings)
 	_menu.play_requested.connect(_on_play_requested)
+	_build_fade()
 
 	var jump := _start_level()
 	if jump >= 0:
@@ -128,40 +134,60 @@ func _start_level() -> int:
 
 # §71 — gameplay never queries raw keys; everything goes through actions.
 func _register_actions() -> void:
-	var defs := {
-		"shoot": [MOUSE_BUTTON_LEFT],
-		"cancel": [MOUSE_BUTTON_RIGHT],
+	# §71 — everything goes through actions, so a pad is a binding change
+	# rather than a second code path through the gameplay.
+	var mouse := {
+		"shoot": MOUSE_BUTTON_LEFT,
+		"cancel": MOUSE_BUTTON_RIGHT,
 	}
-	for name in defs:
-		if InputMap.has_action(name):
-			continue
-		InputMap.add_action(name)
-		for btn in defs[name]:
-			var e := InputEventMouseButton.new()
-			e.button_index = btn
-			InputMap.action_add_event(name, e)
+	for name in mouse:
+		_ensure_action(name)
+		var e := InputEventMouseButton.new()
+		e.button_index = mouse[name]
+		InputMap.action_add_event(name, e)
 
 	var keys := {
 		"restart": KEY_R, "next_level": KEY_N, "prev_level": KEY_P,
 		"debug": KEY_F1, "to_menu": KEY_ESCAPE,
 		"cancel_menu": KEY_ESCAPE, "collection": KEY_C, "confirm": KEY_ENTER,
+		"settings": KEY_O,
 	}
 	for name in keys:
-		if InputMap.has_action(name):
-			continue
-		InputMap.add_action(name)
+		_ensure_action(name)
 		var e := InputEventKey.new()
 		e.physical_keycode = keys[name]
 		InputMap.action_add_event(name, e)
 
 	for i in 8:
 		var n := "slot_%d" % (i + 1)
-		if InputMap.has_action(n):
-			continue
-		InputMap.add_action(n)
+		_ensure_action(n)
 		var e := InputEventKey.new()
 		e.physical_keycode = KEY_1 + i
 		InputMap.action_add_event(n, e)
+
+	# §8.1 controller: A confirms, B cancels, shoulders cycle the bag,
+	# Start pauses. Sticks and the right trigger are read as axes in _process.
+	var pad := {
+		"shoot": JOY_BUTTON_A,
+		"confirm": JOY_BUTTON_A,
+		"cancel": JOY_BUTTON_B,
+		"cancel_menu": JOY_BUTTON_B,
+		"to_menu": JOY_BUTTON_START,
+		"restart": JOY_BUTTON_Y,
+		"slot_next": JOY_BUTTON_RIGHT_SHOULDER,
+		"slot_prev": JOY_BUTTON_LEFT_SHOULDER,
+		"collection": JOY_BUTTON_X,
+	}
+	for name in pad:
+		_ensure_action(name)
+		var e := InputEventJoypadButton.new()
+		e.button_index = pad[name]
+		InputMap.action_add_event(name, e)
+
+
+func _ensure_action(name: String) -> void:
+	if not InputMap.has_action(name):
+		InputMap.add_action(name, 0.25)   # deadzone, §47
 
 
 # ---------------------------------------------------------------- world ----
@@ -175,6 +201,13 @@ func _build_static_world() -> void:
 	e.ambient_light_color = Color(0.35, 0.38, 0.48)
 	e.ambient_light_energy = 0.55
 	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	e.glow_enabled = true
+	e.glow_intensity = 0.55
+	e.glow_bloom = 0.12
+	e.glow_hdr_threshold = 0.92
+	e.ssao_enabled = true
+	e.ssao_radius = 0.35
+	e.ssao_intensity = 1.4
 	env.environment = e
 	add_child(env)
 
@@ -204,8 +237,10 @@ func _build_static_world() -> void:
 	fmesh.size = Vector3(ARENA_W, 0.20, ARENA_D)
 	fm.mesh = fmesh
 	var fmat := StandardMaterial3D.new()
-	fmat.albedo_color = Color(0.085, 0.09, 0.105)
-	fmat.roughness = 0.85
+	fmat.albedo_color = Color(0.072, 0.077, 0.092)
+	fmat.roughness = 0.62
+	fmat.metallic = 0.12
+	fmat.metallic_specular = 0.3
 	fm.material_override = fmat
 	floor_body.add_child(fm)
 	floor_body.position = Vector3(0, -0.10, 0)
@@ -343,6 +378,8 @@ func load_level(idx: int) -> void:
 	score = 0
 	_held = null
 	_aiming = false
+	_slowmo_fired = false
+	_end_slowmo()
 
 	for p in level["holes"]:
 		holes.append(p)
@@ -365,6 +402,8 @@ func _spawn_marble(id: String, pos: Vector3, as_target: bool, owner: int = -1) -
 	m.owner_id = owner
 	if owner >= 0 and is_versus:
 		m.set_owner_halo(HALO_PLAYER if owner == ACTOR_PLAYER else HALO_AI)
+	m.set_marker(_settings.marker_for(owner, as_target))
+	m.enable_trail()
 	m.position = pos
 	m.settled.connect(_on_marble_settled)
 	m.hit_marble.connect(_on_hit_marble.bind(m))
@@ -431,13 +470,13 @@ func _unhandled_input(ev: InputEvent) -> void:
 	if ev.is_action_pressed("debug"):
 		_debug = not _debug
 	if ev.is_action_pressed("restart"):
-		load_level(level_idx)
+		_transition(func(): load_level(level_idx))
 		return
 	if ev.is_action_pressed("next_level"):
-		load_level(level_idx + 1)
+		_transition(func(): load_level(level_idx + 1))
 		return
 	if ev.is_action_pressed("prev_level"):
-		load_level(level_idx - 1)
+		_transition(func(): load_level(level_idx - 1))
 		return
 
 	for i in 8:
@@ -600,15 +639,18 @@ func _advance_selection() -> void:
 # --------------------------------------------------------------- update ----
 
 func _process(delta: float) -> void:
+	_tick_slowmo()
 	# One source of truth for which layer is showing.
 	if _menu:
 		_hud.visible = not _menu.visible
-	_mouse_world = _mouse_to_table()
+	if not pad_active:
+		_mouse_world = _mouse_to_table()
+	_update_controller(delta)
 	_lz_vis.visible = state == St.PLACE or state == St.AIM
 
 	if _cam_shake > 0.0:
 		_cam_shake = maxf(0.0, _cam_shake - delta * 4.0)
-		var s := _cam_shake * 0.06
+		var s := _cam_shake * 0.06 * _settings.screen_shake
 		_cam.position = _cam_home + Vector3(randf_range(-s, s), randf_range(-s, s), randf_range(-s, s))
 	elif _cam.position != _cam_home:
 		_cam.position = _cam_home
@@ -651,12 +693,23 @@ func _update_aim() -> void:
 	_aim_dir = pull.normalized()
 	_aim_power = clampf(dist / (MAX_DRAG * scale), 0.0, 1.0)
 
-	var guide: float = _held.def["aim_guide"]
-	_span_line(_aim_line, origin, origin + _aim_dir * guide)
+	var guide: float = _settings.guide_length(_held.def["aim_guide"])
+	if guide > 0.0:
+		_span_line(_aim_line, origin, origin + _aim_dir * guide)
+	else:
+		_aim_line.visible = false
 	_span_line(_pull_line, origin, _mouse_world)
-	var g: Color = Color(0.45, 1.0, 0.65).lerp(Color(1.0, 0.35, 0.25), _aim_power)
+	_tint_aim(_aim_power)
+
+
+## Green at a feather touch, red at full power — the one piece of the aim
+## readout that still works with the guide line turned off.
+func _tint_aim(power: float) -> void:
+	var g: Color = Color(0.45, 1.0, 0.65).lerp(Color(1.0, 0.35, 0.25), power)
 	_aim_line.material_override.albedo_color = g
 	_aim_line.material_override.emission = g
+	_pull_line.material_override.albedo_color = g
+	_pull_line.material_override.emission = g
 
 
 func _physics_process(delta: float) -> void:
@@ -769,7 +822,10 @@ func _check_captures() -> void:
 
 
 func _pop() -> void:
+	_audio.score_event(randf_range(0.95, 1.12))
 	_cam_shake = maxf(_cam_shake, 0.7)
+	if state == St.RESOLVE and not is_versus and _primary_met():
+		_trigger_slowmo()
 
 
 func _end_shot() -> void:
@@ -829,6 +885,7 @@ func _finish(won: bool) -> void:
 		"won": won, "score": score, "medals": earned,
 		"unlocked": unlocked_now, "news": news,
 	}
+	_audio.fanfare() if won else _audio.failure()
 	_show_result_banner()
 
 
@@ -1251,18 +1308,154 @@ func _ability_burst(at: Vector3, color: Color, max_radius: float) -> void:
 
 func _on_play_requested(index: int, chosen_bag: Array) -> void:
 	_pending_bag.assign(chosen_bag)
-	load_level(index)
+	_transition(func(): load_level(index))
 
 
 func _open_menu() -> void:
 	if _menu == null:
 		return
+	_end_slowmo()
 	_pending_bag.clear()
-	_menu.show_levels()
-	_hud.visible = false
+	_transition(func():
+		_menu.show_levels()
+		_hud.visible = false)
 
 
 func _close_menu() -> void:
 	if _menu:
 		_menu.visible = false
 	_hud.visible = true
+
+
+# ----------------------------------------------------------- controller ----
+#
+# §8.1. The pad drives the same ShotCommand the mouse does; it only produces
+# the placement point, direction and power differently. Pad mode switches on
+# as soon as a stick or trigger moves, and back off on the next mouse motion,
+# so nobody has to pick a control scheme in a menu.
+
+const PAD_CURSOR_SPEED := 2.6      # metres per second
+const PAD_DEADZONE := 0.22
+const PAD_POWER_RATE := 1.6        # trigger seconds from 0 to full
+
+var pad_active := false
+var _pad_cursor := Vector3(0.0, MarbleData.RADIUS, -1.85)
+var _pad_power := 0.0
+var _pad_aim := Vector2(0, 1)
+
+
+func _pad_vector(neg_x: JoyAxis, pos_y: JoyAxis) -> Vector2:
+	var v := Vector2(
+		Input.get_joy_axis(0, neg_x),
+		Input.get_joy_axis(0, pos_y))
+	return Vector2.ZERO if v.length() < PAD_DEADZONE else v
+
+
+func _update_controller(delta: float) -> void:
+	var move := _pad_vector(JOY_AXIS_LEFT_X, JOY_AXIS_LEFT_Y)
+	var aim := _pad_vector(JOY_AXIS_RIGHT_X, JOY_AXIS_RIGHT_Y)
+	var trigger: float = maxf(0.0, Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT))
+
+	if move != Vector2.ZERO or aim != Vector2.ZERO or trigger > 0.1:
+		pad_active = true
+	if not pad_active:
+		return
+
+	match state:
+		St.PLACE:
+			_pad_cursor += Vector3(move.x, 0, move.y) * PAD_CURSOR_SPEED * delta
+			_pad_cursor = _clamp_to_zone(_pad_cursor, ACTOR_PLAYER)
+			_mouse_world = _pad_cursor
+			_pad_power = 0.0
+		St.AIM:
+			if aim != Vector2.ZERO:
+				_pad_aim = aim.normalized()
+			# Hold the trigger to wind up; release to fire.
+			if trigger > 0.15:
+				_pad_power = clampf(_pad_power + trigger * delta / PAD_POWER_RATE, 0.0, 1.0)
+			elif _pad_power > MarbleData.MIN_POWER:
+				_fire_pad()
+				return
+			_aim_dir = Vector3(_pad_aim.x, 0, _pad_aim.y)
+			_aim_power = _pad_power
+			if is_instance_valid(_held):
+				var origin: Vector3 = _held.position
+				var guide: float = _settings.guide_length(_held.def["aim_guide"])
+				if guide > 0.0:
+					_span_line(_aim_line, origin, origin + _aim_dir * guide)
+				_span_line(_pull_line, origin, origin - _aim_dir * (_pad_power * MAX_DRAG))
+				_tint_aim(_pad_power)
+
+
+func _fire_pad() -> void:
+	_aim_dir = Vector3(_pad_aim.x, 0, _pad_aim.y)
+	_aim_power = _pad_power
+	_pad_power = 0.0
+	_fire()
+
+
+# ---------------------------------------------------------- slow motion ----
+#
+# §54. Fired only at the moment the primary objectives become satisfied — the
+# level is already won by then, and ring-outs are latched (§36), so the slower
+# physics step cannot take a result away. It can at most add one, which is a
+# gift rather than a bug. Anywhere earlier in a shot it would be changing a
+# result the player had already earned.
+
+const SLOWMO_SCALE := 0.30
+const SLOWMO_SECONDS := 0.45
+
+var _slowmo_until_ms := 0
+var _slowmo_fired := false
+
+
+func _trigger_slowmo() -> void:
+	if not _settings.slow_motion or _slowmo_fired:
+		return
+	_slowmo_fired = true
+	Engine.time_scale = SLOWMO_SCALE
+	# Wall-clock, because _process delta is itself scaled while this is active.
+	_slowmo_until_ms = Time.get_ticks_msec() + int(SLOWMO_SECONDS * 1000.0)
+	_cam_shake = maxf(_cam_shake, 1.0)
+
+
+func _tick_slowmo() -> void:
+	if _slowmo_until_ms > 0 and Time.get_ticks_msec() >= _slowmo_until_ms:
+		_end_slowmo()
+
+
+func _end_slowmo() -> void:
+	Engine.time_scale = 1.0
+	_slowmo_until_ms = 0
+
+
+func _primary_met() -> bool:
+	return Objectives.all_met(level.get("primary", []), match_stats) \
+		and Objectives.all_met(level.get("additional", []), match_stats)
+
+
+# ---------------------------------------------------------- transitions ----
+
+var _fade: ColorRect = null
+
+
+func _build_fade() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 50          # above the menu, which is 20
+	add_child(layer)
+	_fade = ColorRect.new()
+	_fade.color = Color(0.02, 0.02, 0.03, 0.0)
+	_fade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(_fade)
+
+
+## Fade out, run `mid`, fade back in. Keeps level loads from snapping.
+func _transition(mid: Callable, out_time: float = 0.18, in_time: float = 0.26) -> void:
+	if _fade == null:
+		mid.call()
+		return
+	var t := create_tween()
+	t.tween_property(_fade, "color:a", 1.0, out_time)
+	t.tween_callback(mid)
+	t.tween_property(_fade, "color:a", 0.0, in_time)

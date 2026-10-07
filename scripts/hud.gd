@@ -14,6 +14,7 @@ var _power_bg: ColorRect
 var _power_fill: ColorRect
 var _debug: Label
 var _banner_t := 0.0
+var text_scale := 1.0
 var _chips: Array[Panel] = []
 
 const FONT_BIG := 44
@@ -95,7 +96,7 @@ func _ready() -> void:
 
 func _label(size: int, col: Color) -> Label:
 	var l := Label.new()
-	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_font_size_override("font_size", int(round(size * text_scale)))
 	l.add_theme_color_override("font_color", col)
 	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
 	l.add_theme_constant_override("shadow_offset_y", 2)

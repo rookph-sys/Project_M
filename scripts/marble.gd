@@ -37,6 +37,7 @@ var _force_settle := false
 var _force_ramp := 0.0
 var _mesh: MeshInstance3D
 var _halo: MeshInstance3D = null
+var _marker: Label3D = null
 var _contact_cooldown := 0.0
 var _pending_linear := Vector3.ZERO
 var _pending_angular := Vector3.ZERO
@@ -78,15 +79,27 @@ func setup(id: String, as_target: bool) -> void:
 	var sm := SphereMesh.new()
 	sm.radius = MarbleData.RADIUS
 	sm.height = MarbleData.RADIUS * 2.0
-	sm.radial_segments = 24
-	sm.rings = 12
+	sm.radial_segments = 32
+	sm.rings = 16
 	_mesh.mesh = sm
+	# §51 — colourful glass on a dark table. At ~45px a marble reads by its
+	# highlight and rim, not by surface detail, so the budget goes into a tight
+	# specular and a strong rim rather than texture.
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = def["color"]
-	mat.metallic = 0.25
-	mat.roughness = 0.18
+	mat.metallic = 0.35
+	mat.metallic_specular = 0.85
+	mat.roughness = 0.08
 	mat.rim_enabled = true
-	mat.rim = 0.5
+	mat.rim = 0.85
+	mat.rim_tint = 0.3
+	mat.clearcoat_enabled = true
+	mat.clearcoat = 0.9
+	mat.clearcoat_roughness = 0.05
+	var glow: Color = def["color"]
+	mat.emission_enabled = true
+	mat.emission = glow
+	mat.emission_energy_multiplier = 0.12
 	_mesh.material_override = mat
 	add_child(_mesh)
 
@@ -248,6 +261,23 @@ func fade_out() -> void:
 ## Ground ring marking whose marble this is. Drawn on the floor rather than on
 ## the sphere, because the sphere is rolling — a mark on the marble itself
 ## would tumble and the colour would read as part of the marble.
+## §71 — a shape tag so ownership does not depend on telling red from blue.
+func set_marker(tag: String) -> void:
+	if tag == "":
+		return
+	_marker = Label3D.new()
+	_marker.text = tag
+	_marker.font_size = 64
+	_marker.pixel_size = 0.0016
+	_marker.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_marker.no_depth_test = true
+	_marker.modulate = Color(1, 1, 1, 0.95)
+	_marker.outline_size = 18
+	_marker.outline_modulate = Color(0, 0, 0, 0.9)
+	_marker.top_level = true
+	add_child(_marker)
+
+
 func set_owner_halo(color: Color) -> void:
 	_halo = MeshInstance3D.new()
 	var t := TorusMesh.new()
@@ -269,6 +299,11 @@ func set_owner_halo(color: Color) -> void:
 
 
 func _process(_delta: float) -> void:
+	_update_trail()
+	if _marker:
+		_marker.global_position = global_position + Vector3(0, 0.17, 0)
+		_marker.visible = state != State.CAPTURED and state != State.SUNK \
+				and state != State.LOST
 	if _halo == null:
 		return
 	if state == State.CAPTURED or state == State.SUNK or state == State.LOST:
@@ -287,3 +322,65 @@ func _on_body_entered(body: Node) -> void:
 		hit_marble.emit(body as Marble, impact)
 	else:
 		hit_surface.emit(body, impact)
+
+
+# --------------------------------------------------------------- trail ----
+#
+# §2.4. A fading ribbon behind a moving marble. It costs nothing when the
+# marble is at rest, which is most of the time.
+
+const TRAIL_MIN_SPEED := 0.9
+const TRAIL_POINTS := 14
+
+var _trail: MeshInstance3D
+var _trail_mesh: ImmediateMesh
+var _trail_pts: Array[Vector3] = []
+
+
+func enable_trail() -> void:
+	_trail_mesh = ImmediateMesh.new()
+	_trail = MeshInstance3D.new()
+	_trail.mesh = _trail_mesh
+	_trail.top_level = true
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.vertex_color_use_as_albedo = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_trail.material_override = mat
+	add_child(_trail)
+
+
+func _update_trail() -> void:
+	if _trail == null:
+		return
+	var speed := linear_velocity.length()
+	if speed > TRAIL_MIN_SPEED:
+		_trail_pts.append(global_position)
+		while _trail_pts.size() > TRAIL_POINTS:
+			_trail_pts.pop_front()
+	elif not _trail_pts.is_empty():
+		_trail_pts.pop_front()
+
+	_trail_mesh.clear_surfaces()
+	if _trail_pts.size() < 2:
+		return
+
+	var col: Color = def["color"]
+	_trail_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+	for i in _trail_pts.size():
+		var t := float(i) / float(_trail_pts.size() - 1)
+		# Taper to nothing at the tail so it reads as motion, not a stick.
+		var half: float = MarbleData.RADIUS * 0.75 * t
+		var dir: Vector3 = (_trail_pts[mini(i + 1, _trail_pts.size() - 1)] - _trail_pts[maxi(i - 1, 0)])
+		dir.y = 0.0
+		if dir.length() < 0.0001:
+			dir = Vector3.FORWARD
+		var side := dir.normalized().cross(Vector3.UP) * half
+		var p: Vector3 = _trail_pts[i]
+		p.y = 0.02
+		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, 0.55 * t * t))
+		_trail_mesh.surface_add_vertex(p - side)
+		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, 0.55 * t * t))
+		_trail_mesh.surface_add_vertex(p + side)
+	_trail_mesh.surface_end()
