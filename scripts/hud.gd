@@ -15,6 +15,8 @@ var _power_fill: ColorRect
 var _debug: Label
 var _banner_t := 0.0
 var text_scale := 1.0
+var _shown_score := 0.0
+var _score_punch := 0.0
 var _chips: Array[Panel] = []
 
 const FONT_BIG := 44
@@ -111,6 +113,14 @@ func flash(title: String, sub: String) -> void:
 	_banner.text = title
 	_sub.text = sub
 	_banner_t = 3.2
+	# Punch the banner in with overshoot and a slight tilt.
+	_banner.pivot_offset = _banner.size * 0.5
+	_banner.scale = Vector2(0.55, 0.55)
+	_banner.rotation = randf_range(-0.045, 0.045)
+	var t := create_tween()
+	t.tween_property(_banner, "scale", Vector2.ONE, 0.30) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	t.parallel().tween_property(_banner, "rotation", 0.0, 0.34)
 
 
 func _process(delta: float) -> void:
@@ -146,8 +156,19 @@ func refresh(g) -> void:
 			var done: bool = Objectives.met(o, g.match_stats)
 			goals.append("%s %s" % ["[x]" if done else "[ ]", Objectives.describe(o)])
 		_top.text = "%s          SHOTS  %d" % ["     ".join(goals), g.shots_left]
-	_score.text = "SCORE  %d" % g.score
+	# Count up rather than snapping: a number that races to its target sells the
+	# size of a scoring shot far better than the final value does.
+	if absf(g.score - _shown_score) > 0.5:
+		_shown_score = lerpf(_shown_score, float(g.score), 0.22)
+		_score_punch = 1.0
+	else:
+		_shown_score = g.score
+	_score.text = "SCORE  %d" % int(round(_shown_score))
+	_score_punch = maxf(0.0, _score_punch - 0.06)
+	_score.pivot_offset = _score.size * 0.5
+	_score.scale = Vector2.ONE * (1.0 + _score_punch * 0.22)
 	_power_fill.size.x = 320.0 * g._aim_power
+	_power_fill.size.y = 12 + g._aim_power * 8.0
 	_power_fill.color = Color(0.45, 1.0, 0.65).lerp(Color(1.0, 0.35, 0.25), g._aim_power)
 
 	_sync_bag(g)
@@ -218,6 +239,9 @@ func _sync_bag(g) -> void:
 			sb.bg_color = Color(col.r, col.g, col.b, 0.85)
 			sb.set_border_width_all(3 if i == g.selected else 0)
 			sb.border_color = Color(1, 1, 1, 0.95)
+		p.pivot_offset = p.size * 0.5
+		var want: float = 1.12 if i == g.selected and not g.bag_used[i] else 1.0
+		p.scale = p.scale.lerp(Vector2.ONE * want, 0.25)
 		var l: Label = p.get_child(0)
 		l.text = "%d\n%s" % [i + 1, d["name"]]
 		l.add_theme_color_override("font_color",

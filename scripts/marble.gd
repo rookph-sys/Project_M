@@ -185,7 +185,12 @@ func force_settle() -> void:
 	_force_ramp = 0.0
 
 
-func _physics_process(delta: float) -> void:
+func _physics_process(_delta: float) -> void:
+	# Use the FIXED step, never the delta handed in: Engine.time_scale scales
+	# that delta while Jolt keeps integrating on its own fixed tick. Reading the
+	# scaled value made damping and settle detection disagree with the engine,
+	# so slow motion quietly changed how far a marble travelled.
+	var delta := 1.0 / float(Engine.physics_ticks_per_second)
 	_contact_cooldown = maxf(0.0, _contact_cooldown - delta)
 
 	if state == State.CAPTURED or state == State.SUNK or state == State.LOST:
@@ -300,6 +305,7 @@ func set_owner_halo(color: Color) -> void:
 
 func _process(_delta: float) -> void:
 	_update_trail()
+	_update_squash()
 	if _marker:
 		_marker.global_position = global_position + Vector3(0, 0.17, 0)
 		_marker.visible = state != State.CAPTURED and state != State.SUNK \
@@ -384,3 +390,39 @@ func _update_trail() -> void:
 		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, 0.55 * t * t))
 		_trail_mesh.surface_add_vertex(p + side)
 	_trail_mesh.surface_end()
+
+
+# ------------------------------------------------- squash and stretch ----
+#
+# §2.4. A rigid sphere that hits something and stays perfectly round reads as
+# weightless. The collider never changes — only the mesh — so this is purely
+# cosmetic and cannot affect a result.
+
+var _squash := 0.0
+var _squash_axis := Vector3.FORWARD
+
+
+func squash(direction: Vector3, strength: float) -> void:
+	if _mesh == null:
+		return
+	_squash_axis = direction.normalized() if direction.length() > 0.01 else Vector3.FORWARD
+	_squash = clampf(maxf(_squash, strength), 0.0, 1.0)
+
+
+func _update_squash() -> void:
+	if _mesh == null:
+		return
+	if _squash <= 0.001:
+		if _mesh.scale != Vector3.ONE:
+			_mesh.scale = Vector3.ONE
+			_mesh.basis = Basis.IDENTITY
+		return
+	_squash = maxf(0.0, _squash - 0.085)
+
+	# Flatten along the impact axis, bulge across it, conserving volume enough
+	# that it reads as rubber rather than as a scaling bug.
+	var k: float = _squash * 0.42
+	var along := 1.0 - k
+	var across := 1.0 + k * 0.55
+	var b := Basis.looking_at(_squash_axis, Vector3.UP)
+	_mesh.transform = Transform3D(b.scaled(Vector3(across, across, along)), Vector3.ZERO)

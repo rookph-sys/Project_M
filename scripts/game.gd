@@ -101,6 +101,9 @@ func _ready() -> void:
 	add_child(_audio)
 	_settings.apply_audio()
 	_audio.start_music(_settings.music_volume)
+	_juice = Juice.new()
+	add_child(_juice)
+	_juice.setup(_cam, _settings)
 	_hud = preload("res://scripts/hud.gd").new()
 	_hud.text_scale = _settings.text_scale
 	add_child(_hud)
@@ -592,6 +595,7 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 	var m := _held
 	_held = null
 
+	_combo_in_shot = 0
 	_shot_ctx = {
 		"marble": m,
 		"marble_id": m.def_id,
@@ -648,12 +652,7 @@ func _process(delta: float) -> void:
 	_update_controller(delta)
 	_lz_vis.visible = state == St.PLACE or state == St.AIM
 
-	if _cam_shake > 0.0:
-		_cam_shake = maxf(0.0, _cam_shake - delta * 4.0)
-		var s := _cam_shake * 0.06 * _settings.screen_shake
-		_cam.position = _cam_home + Vector3(randf_range(-s, s), randf_range(-s, s), randf_range(-s, s))
-	elif _cam.position != _cam_home:
-		_cam.position = _cam_home
+	_update_camera(delta)
 
 	match state:
 		St.PLACE:
@@ -792,9 +791,12 @@ func _check_captures() -> void:
 					match_stats["sinks"] += 1
 					score += 1000
 					_shot_ctx["sinks"] = _shot_ctx.get("sinks", 0) + 1
-					_pop()
+					_pop(p, 1000, Color(0.5, 0.85, 1.0))
 				elif not m.is_target:
 					score -= 250     # §40
+					match_stats["marbles_lost"] += 1
+					_audio.marble_lost()
+					_juice.popup(p, "-250", Color(1.0, 0.35, 0.3), 0)
 				break
 
 		if m.state == Marble.State.SUNK:
@@ -818,12 +820,11 @@ func _check_captures() -> void:
 					if by != "":
 						match_stats["ring_out_by"][by] = match_stats["ring_out_by"].get(by, 0) + 1
 				_shot_ctx["ring_outs"] = _shot_ctx.get("ring_outs", 0) + 1
-				_pop()
+				_pop(p, 1000, Color(1.0, 0.85, 0.3))
 
 
-func _pop() -> void:
-	_audio.score_event(randf_range(0.95, 1.12))
-	_cam_shake = maxf(_cam_shake, 0.7)
+func _pop(at: Vector3 = Vector3.ZERO, points: int = 1000, color: Color = Color(1.0, 0.85, 0.3)) -> void:
+	_score_feedback(at, points, color)
 	if state == St.RESOLVE and not is_versus and _primary_met():
 		_trigger_slowmo()
 
@@ -896,6 +897,9 @@ func _show_result_banner() -> void:
 		_hud.flash(why, _objective_summary() + "      [R] retry")
 		return
 
+	_juice.popup(Vector3.ZERO, "PERFECT!", Color(1.0, 0.9, 0.35), 4)
+	_juice.flash(Color(1.0, 0.95, 0.6), 0.12)
+	_juice.hit_stop(0.12)
 	var stars := "★".repeat(r["medals"]) + "☆".repeat(3 - r["medals"])
 	var line := "Score %d   %s" % [r["score"], stars]
 	if r["unlocked"] != "":
@@ -1176,8 +1180,7 @@ func _magnet_pulse(src: Marble) -> void:
 
 func _on_hit_marble(other: Marble, speed: float, src: Marble) -> void:
 	_audio.impact(speed)
-	if speed > 2.0:
-		_cam_shake = maxf(_cam_shake, clampf(speed / 7.0, 0.0, 0.8))
+	_impact_feedback(src, other, speed)
 	if _shot_ctx.is_empty() or _shot_ctx["marble"] != src:
 		return
 
@@ -1459,3 +1462,104 @@ func _transition(mid: Callable, out_time: float = 0.18, in_time: float = 0.26) -
 	t.tween_property(_fade, "color:a", 1.0, out_time)
 	t.tween_callback(mid)
 	t.tween_property(_fade, "color:a", 0.0, in_time)
+
+
+# ---------------------------------------------------------------- juice ----
+
+const HIT_STOP_LIGHT := 0.035
+const HIT_STOP_HEAVY := 0.085
+
+var _juice: Juice
+var _combo_in_shot := 0
+var _cam_kick := Vector3.ZERO
+var _cam_zoom := 0.0
+
+
+## Everything that happens when one marble strikes another, scaled by how hard.
+func _impact_feedback(a: Marble, b: Marble, speed: float) -> void:
+	var dir := (b.global_position - a.global_position).normalized()
+	var hard: float = clampf(speed / 4.5, 0.0, 1.0)
+
+	a.squash(dir, hard * 0.9)
+	b.squash(-dir, hard)
+
+	if hard > 0.12:
+		_spawn_sparks(a.global_position.lerp(b.global_position, 0.5), b.def["color"], hard)
+	if hard > 0.30:
+		_cam_kick = dir * (hard * 0.30)
+		_cam_zoom = maxf(_cam_zoom, hard * 0.28)
+		_cam_shake = maxf(_cam_shake, hard * 0.9)
+	# A freeze only on contacts worth noticing, or it feels like stutter.
+	if hard > 0.55:
+		_juice.hit_stop(HIT_STOP_LIGHT + (hard - 0.55) * HIT_STOP_HEAVY)
+
+
+## A scoring event: the number flies, the combo climbs, the screen reacts.
+func _score_feedback(at: Vector3, points: int, color: Color) -> void:
+	_combo_in_shot += 1
+	_juice.popup(at, "+%d" % points, color, _combo_in_shot - 1)
+	_juice.combo(_combo_in_shot)
+	_juice.flash(color, 0.05 + _combo_in_shot * 0.02)
+	_juice.hit_stop(HIT_STOP_LIGHT + _combo_in_shot * 0.012)
+	_cam_shake = maxf(_cam_shake, 0.8 + _combo_in_shot * 0.25)
+	_cam_zoom = maxf(_cam_zoom, 0.3)
+	# Each one in a chain rings a step higher — the escalation is the reward.
+	_audio.score_event(0.9 + _combo_in_shot * 0.14)
+	_spawn_sparks(at, color, 1.0)
+
+
+func _spawn_sparks(at: Vector3, color: Color, strength: float) -> void:
+	var p := GPUParticles3D.new()
+	p.amount = int(6 + strength * 22)
+	p.lifetime = 0.45
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.position = Vector3(at.x, MarbleData.RADIUS, at.z)
+
+	var m := ParticleProcessMaterial.new()
+	m.direction = Vector3(0, 1, 0)
+	m.spread = 75.0
+	m.initial_velocity_min = 0.8 * strength
+	m.initial_velocity_max = 2.6 * strength
+	m.gravity = Vector3(0, -4.0, 0)
+	m.scale_min = 0.012
+	m.scale_max = 0.030
+	m.color = color
+	p.process_material = m
+
+	var mesh := SphereMesh.new()
+	mesh.radius = 1.0
+	mesh.height = 2.0
+	mesh.radial_segments = 4
+	mesh.rings = 2
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 2.0
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mesh.material = mat
+	p.draw_pass_1 = mesh
+
+	_dynamic.add_child(p)
+	p.emitting = true
+	get_tree().create_timer(1.2).timeout.connect(func():
+		if is_instance_valid(p):
+			p.queue_free())
+
+
+## Directional kick plus a brief push-in, on top of the random shake.
+func _update_camera(delta: float) -> void:
+	_cam_kick = _cam_kick.lerp(Vector3.ZERO, clampf(delta * 9.0, 0.0, 1.0))
+	_cam_zoom = lerpf(_cam_zoom, 0.0, clampf(delta * 6.0, 0.0, 1.0))
+
+	var shake := Vector3.ZERO
+	if _cam_shake > 0.0:
+		_cam_shake = maxf(0.0, _cam_shake - delta * 4.0)
+		var s: float = _cam_shake * 0.06 * _settings.screen_shake
+		shake = Vector3(randf_range(-s, s), randf_range(-s, s), randf_range(-s, s))
+
+	var toward := (Vector3.ZERO - _cam_home).normalized() * _cam_zoom * 0.45
+	_cam.position = _cam_home + shake + toward \
+		+ _cam_kick * _settings.screen_shake
