@@ -29,6 +29,7 @@ var is_target := false
 var owner_id := -1            # 0 player, 1 AI, -1 neutral target
 var shot_this_turn := false
 var has_triggered_stop_ability := false
+var is_anchored := false
 
 var _settle_timer := 0.0
 var _is_settled := true
@@ -125,6 +126,28 @@ func _integrate_forces(st: PhysicsDirectBodyState3D) -> void:
 	if _pending_add != Vector3.ZERO:
 		st.linear_velocity += _pending_add
 		_pending_add = Vector3.ZERO
+
+
+## Override direction while keeping speed — used by Pinpoint, which sends the
+## struck marble along the line the shooter was aimed at.
+func redirect(dir: Vector2, speed_scale: float = 1.0) -> void:
+	var speed := linear_velocity.length() * speed_scale
+	var v := Vector3(dir.x, 0.0, dir.y).normalized() * speed
+	_pending_linear = v
+	_pending_angular = Vector3.UP.cross(v) / MarbleData.RADIUS
+	_has_pending = true
+	wake()
+
+
+## Anchor: the marble stops being pushable for the rest of the match. It still
+## blocks — that is the whole point — but nothing can shift it again.
+func anchor() -> void:
+	is_anchored = true
+	linear_velocity = Vector3.ZERO
+	angular_velocity = Vector3.ZERO
+	freeze = true
+	if _halo:
+		_halo.scale = Vector3(1.25, 1.0, 1.25)
 
 
 ## Nudge an already-resting marble (the magnet pulse, §30).

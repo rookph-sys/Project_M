@@ -26,35 +26,35 @@ const DEFS := {
 		"mass": 1.60, "shot_mult": 1.25, "lin_damp": 1.118, "ang_damp": 0.55, "sim_damp": 0.9533,
 		"friction": 0.45, "bounce": 0.68,
 		"aim_guide": 1.40, "drag_scale": 1.00, "target_dist": 4.00,
-		"ability": "", "desc": "25% more momentum, moves slower. Best knockback.",
+		"ability": "breaker", "desc": "BREAKER — its first hit blasts the target with a huge bonus shove.",
 	},
 	"rubber": {
 		"name": "Rubber", "color": Color(0.95, 0.45, 0.25),
 		"mass": 0.90, "shot_mult": 0.95, "lin_damp": 1.064, "ang_damp": 0.30, "sim_damp": 0.8542,
 		"friction": 0.25, "bounce": 0.96,
 		"aim_guide": 1.40, "drag_scale": 1.00, "target_dist": 5.80,
-		"ability": "", "desc": "Bounces hard off bumpers. Travels furthest.",
+		"ability": "ricochet", "desc": "RICOCHET — regains speed off its first hit and carries on into more.",
 	},
 	"precision": {
 		"name": "Precision", "color": Color(0.35, 0.80, 0.95),
 		"mass": 0.85, "shot_mult": 0.72, "lin_damp": 1.419, "ang_damp": 0.50, "sim_damp": 1.1548,
 		"friction": 0.40, "bounce": 0.80,
 		"aim_guide": 2.40, "drag_scale": 1.25, "target_dist": 3.60,
-		"ability": "", "desc": "Longer aim guide, finer power control.",
+		"ability": "pinpoint", "desc": "PINPOINT — sends the first marble it touches exactly where you aimed.",
 	},
 	"sticky": {
 		"name": "Sticky", "color": Color(0.55, 0.85, 0.35),
 		"mass": 1.10, "shot_mult": 0.90, "lin_damp": 1.566, "ang_damp": 1.10, "sim_damp": 1.4318,
 		"friction": 0.75, "bounce": 0.22,
 		"aim_guide": 1.40, "drag_scale": 1.00, "target_dist": 2.80,
-		"ability": "", "desc": "Stops fast. Blocks lanes and holds position.",
+		"ability": "anchor", "desc": "ANCHOR — once it stops it is bolted down. Nothing moves it again.",
 	},
 	"magnet": {
 		"name": "Magnet", "color": Color(0.80, 0.40, 0.90),
 		"mass": 1.00, "shot_mult": 0.95, "lin_damp": 1.168, "ang_damp": 0.50, "sim_damp": 0.9756,
 		"friction": 0.40, "bounce": 0.80,
 		"aim_guide": 1.40, "drag_scale": 1.00, "target_dist": 4.70,
-		"ability": "magnet_pulse", "desc": "On stop, pulls nearby marbles toward it. Once per match.",
+		"ability": "magnet_pulse", "desc": "PULSE — on stopping, drags everything nearby hard toward it. Once.",
 	},
 	# Targets are not in the player's bag; they share Standard's physics.
 	"target": {
@@ -66,8 +66,8 @@ const DEFS := {
 	},
 }
 
-const MAGNET_RADIUS := 0.75
-const MAGNET_MAX_IMPULSE := 0.55
+const MAGNET_RADIUS := 1.15
+const MAGNET_MAX_IMPULSE := 1.90
 
 
 static func get_def(id: String) -> Dictionary:

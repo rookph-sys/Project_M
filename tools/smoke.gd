@@ -42,7 +42,7 @@ func _play(game, idx: int) -> void:
 	await physics_frame
 
 	var lvl: Dictionary = Levels.ALL[idx]
-	if lvl["mode"] == "knockout":
+	if lvl["mode"] == "duel":
 		return      # covered by tools/ai_test.gd, which drives both sides
 	var shots := 0
 	var rng := RandomNumberGenerator.new()

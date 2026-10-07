@@ -210,7 +210,10 @@ func _build_sim(board: Dictionary) -> ShotSim:
 	sim.bumpers = board.get("bumpers", PackedVector3Array())
 	for m in board["marbles"]:
 		var d: Dictionary = MarbleData.get_def(m["id"])
-		sim.add_disc(m["pos"], d["mass"], ShotSim.sim_damping(d), d["bounce"], m["owner"])
+		# An anchored marble reads as effectively immovable, so the AI does not
+		# plan shots that assume it can be pushed.
+		var mass: float = 1000.0 if m.get("anchored", false) else d["mass"]
+		sim.add_disc(m["pos"], mass, ShotSim.sim_damping(d), d["bounce"], m["owner"])
 	return sim
 
 

@@ -527,6 +527,8 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 
 	_shot_ctx = {
 		"marble": m,
+		"aim": _aim_dir,
+		"ability_fired": false,
 		"touched_bank": false,
 		"direct_targets": {},
 		"indirect": {},
@@ -922,7 +924,7 @@ func _board_for_ai() -> Dictionary:
 			continue
 		var own: int = m.owner_id if m.owner_id >= 0 else ShotSim.Owner.TARGET
 		live.append({"pos": Vector2(m.position.x, m.position.z), "id": m.def_id,
-					 "owner": own})
+					 "owner": own, "anchored": m.is_anchored})
 		if own != ACTOR_AI:
 			aim_points.append(Vector2(m.position.x, m.position.z))
 
@@ -988,8 +990,7 @@ func _on_marble_settled(m: Marble) -> void:
 	if m.has_triggered_stop_ability or m.def["ability"] == "":
 		return
 	m.has_triggered_stop_ability = true
-	if m.def["ability"] == "magnet_pulse":
-		_magnet_pulse(m)
+	_ability_on_stop(m)
 
 
 ## §30 — one pulse, strength falls off linearly to the radius.
@@ -999,6 +1000,8 @@ func _magnet_pulse(src: Marble) -> void:
 			continue
 		if m.state == Marble.State.CAPTURED or m.state == Marble.State.SUNK:
 			continue
+		if m.is_anchored:
+			continue      # an anchored marble is not going anywhere
 		var d := Vector2(m.position.x - src.position.x, m.position.z - src.position.z)
 		var dist := d.length()
 		if dist >= MarbleData.MAGNET_RADIUS or dist < 0.001:
@@ -1016,6 +1019,12 @@ func _on_hit_marble(other: Marble, speed: float, src: Marble) -> void:
 		_cam_shake = maxf(_cam_shake, clampf(speed / 7.0, 0.0, 0.8))
 	if _shot_ctx.is_empty() or _shot_ctx["marble"] != src:
 		return
+
+	# OnFirstCollision (§13) — once per shot, on the first marble touched.
+	if not _shot_ctx.get("ability_fired", false):
+		_shot_ctx["ability_fired"] = true
+		_ability_on_first_collision(src, other)
+
 	if _is_objective_relevant(other):
 		_shot_ctx["direct_targets"][other.get_instance_id()] = true
 
@@ -1035,3 +1044,97 @@ func _on_hit_surface(body: Node, speed: float, src: Marble) -> void:
 # §51 — in Ringer and Holes that means the red targets.
 func _is_objective_relevant(m: Marble) -> bool:
 	return m.is_target
+
+
+# ------------------------------------------------------------ abilities ----
+#
+# §12-13. Each marble has at most one ability, it fires on a physics event,
+# it adds no new input, and it changes physics rather than scoring. Standard
+# deliberately has none — it is the baseline everything is balanced against.
+
+const BREAKER_BONUS := 3.20       # m/s added to the struck marble
+const RICOCHET_BONUS := 2.10      # m/s the shooter regains off its first hit
+const PINPOINT_SCALE := 1.25      # speed multiplier on the redirected marble
+
+const ABILITY_COLOR := {
+	"breaker": Color(1.00, 0.55, 0.15),
+	"ricochet": Color(1.00, 0.45, 0.25),
+	"pinpoint": Color(0.35, 0.85, 1.00),
+	"anchor": Color(0.55, 0.90, 0.35),
+	"magnet_pulse": Color(0.85, 0.45, 1.00),
+}
+
+
+## Fired by the shooter's first contact with another marble.
+func _ability_on_first_collision(src: Marble, other: Marble) -> void:
+	var id: String = src.def["ability"]
+	var from := Vector2(src.position.x, src.position.z)
+	var to := Vector2(other.position.x, other.position.z)
+	var away := (to - from).normalized()
+
+	match id:
+		"breaker":
+			other.add_velocity(Vector3(away.x, 0, away.y) * BREAKER_BONUS)
+			_ability_burst(other.position, ABILITY_COLOR[id], 0.85)
+			_cam_shake = maxf(_cam_shake, 1.0)
+			_audio.impact(5.0)
+		"ricochet":
+			var v := src.linear_velocity
+			if v.length() > 0.05:
+				src.add_velocity(v.normalized() * RICOCHET_BONUS)
+			_ability_burst(src.position, ABILITY_COLOR[id], 0.55)
+			_audio.impact(3.2)
+		"pinpoint":
+			# The whole point: the target goes where you were aiming, not
+			# wherever the contact geometry happened to send it.
+			var aim := Vector2(_shot_ctx.get("aim", Vector3.FORWARD).x,
+							   _shot_ctx.get("aim", Vector3.FORWARD).z)
+			if aim.length() > 0.01:
+				other.redirect(aim.normalized(), PINPOINT_SCALE)
+			_ability_burst(other.position, ABILITY_COLOR[id], 0.70)
+			_audio.impact(3.5)
+
+
+## Fired the first time a marble comes to rest after its own shot (§33).
+func _ability_on_stop(m: Marble) -> void:
+	match m.def["ability"]:
+		"anchor":
+			m.anchor()
+			_ability_burst(m.position, ABILITY_COLOR["anchor"], 0.45)
+		"magnet_pulse":
+			_magnet_pulse(m)
+			_ability_burst(m.position, ABILITY_COLOR["magnet_pulse"],
+				MarbleData.MAGNET_RADIUS)
+
+
+## Expanding ring on the table. Abilities that cannot be seen may as well not
+## exist, and a flat ring reads at this camera angle better than particles.
+func _ability_burst(at: Vector3, color: Color, max_radius: float) -> void:
+	var ring := MeshInstance3D.new()
+	var t := TorusMesh.new()
+	t.inner_radius = 0.07
+	t.outer_radius = 0.10
+	t.rings = 32
+	ring.mesh = t
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 3.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ring.material_override = mat
+	ring.position = Vector3(at.x, 0.015, at.z)
+	_dynamic.add_child(ring)
+
+	# Grow the radii rather than scaling the node: a uniform scale thickens the
+	# tube as well, which reads as a swelling donut instead of a shockwave.
+	var band := 0.035
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(t, "inner_radius", max_radius - band, 0.34) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(t, "outer_radius", max_radius, 0.34) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(mat, "albedo_color:a", 0.0, 0.34).set_delay(0.06)
+	tw.chain().tween_callback(ring.queue_free)
