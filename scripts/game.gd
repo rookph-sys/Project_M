@@ -78,6 +78,9 @@ var _shot_ctx := {}
 
 var _cam: Camera3D
 var _cam_home := Vector3(0.0, 4.20, -3.55)
+# Dead centre. Aiming it further forward was tried to lift the launch strip up
+# the screen and did the opposite — it halved the room below the marble.
+const CAM_TARGET := Vector3.ZERO
 var _cam_shake := 0.0
 var _audio: MarbleAudio
 var _hud: CanvasLayer
@@ -228,7 +231,7 @@ func _build_static_world() -> void:
 	_cam.far = 50.0
 	_cam.position = _cam_home
 	add_child(_cam)
-	_cam.look_at(Vector3.ZERO, Vector3.UP)
+	_cam.look_at(CAM_TARGET, Vector3.UP)
 
 	# Table. No perimeter walls — SPEC §9 option A: marbles roll off the edge.
 	var floor_body := StaticBody3D.new()
@@ -703,7 +706,7 @@ func _update_aim() -> void:
 		return
 
 	_aim_dir = pull.normalized()
-	_aim_power = clampf(dist / (MAX_DRAG * scale), 0.0, 1.0)
+	_aim_power = _power_from_drag(origin, scale)
 
 	var guide: float = _settings.guide_length(_held.def["aim_guide"])
 	if guide > 0.0:
@@ -1648,7 +1651,7 @@ func _update_camera(delta: float) -> void:
 		var s: float = _cam_shake * 0.06 * _settings.screen_shake
 		shake = Vector3(randf_range(-s, s), randf_range(-s, s), randf_range(-s, s))
 
-	var toward := (Vector3.ZERO - _cam_home).normalized() * _cam_zoom * 0.45
+	var toward := (CAM_TARGET - _cam_home).normalized() * _cam_zoom * 0.45
 	_cam.position = _cam_home + shake + toward \
 		+ _cam_kick * _settings.screen_shake
 
@@ -1760,3 +1763,56 @@ func _busiest_point() -> Vector3:
 		return Vector3.ZERO
 	return Vector3(best.position.x, 0.0, best.position.z) \
 		* clampf(best_speed / 3.0, 0.0, 1.0)
+
+
+# ------------------------------------------------------------ aim power ----
+#
+# Power used to be world-space drag distance: 1.40 m of table, measured on the
+# ground plane. That is unreachable in the direction people actually shoot.
+#
+# The launch strip sits near the bottom of the screen, and a slingshot pull is
+# away from the target — so the common shot, straight up the table, needs a
+# straight-DOWN drag into roughly 130 pixels of remaining window. 1.40 m is
+# about 330 pixels at this camera. The cursor hit the edge of the window at
+# around 40% power and stopped, which is exactly the "it sticks and will not
+# pull all the way back" report.
+#
+# So: measure the drag on screen, and cap the requirement at how much room
+# actually exists in the direction being pulled. Full power is then always
+# reachable by dragging to the edge, whichever way that is, while directions
+# with plenty of room keep a consistent, less twitchy feel.
+
+const DRAG_FRACTION := 0.26        # of viewport height, for an unconstrained pull
+const DRAG_MIN_PX := 64.0          # never make full power a flick of the wrist
+const DRAG_EDGE_MARGIN := 0.90     # reach full power just before the edge
+
+
+func _power_from_drag(origin: Vector3, marble_scale: float) -> float:
+	return _power_from_drag_at(origin, marble_scale, get_viewport().get_mouse_position())
+
+
+## Split out so it can be tested without a real cursor.
+func _power_from_drag_at(origin: Vector3, marble_scale: float, to: Vector2) -> float:
+	var vp := get_viewport().get_visible_rect().size
+	var from := _cam.unproject_position(origin)
+	var drag := to - from
+	var dist := drag.length()
+	if dist < 2.0:
+		return 0.0
+
+	var want: float = vp.y * DRAG_FRACTION * marble_scale
+	var room: float = _distance_to_edge(from, drag / dist, vp) * DRAG_EDGE_MARGIN
+	var needed: float = maxf(minf(want, room), DRAG_MIN_PX)
+	return clampf(dist / needed, 0.0, 1.0)
+
+
+## How far a ray from `p` in direction `d` travels before leaving the screen.
+func _distance_to_edge(p: Vector2, d: Vector2, vp: Vector2) -> float:
+	var best := INF
+	if absf(d.x) > 0.0001:
+		var bx: float = vp.x if d.x > 0.0 else 0.0
+		best = minf(best, (bx - p.x) / d.x)
+	if absf(d.y) > 0.0001:
+		var by: float = vp.y if d.y > 0.0 else 0.0
+		best = minf(best, (by - p.y) / d.y)
+	return maxf(best, 0.0) if best < INF else vp.length()
