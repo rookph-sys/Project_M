@@ -30,7 +30,10 @@ const SWEEP_START := 3.00     # §35 start retiring stragglers
 const SOFT_TIMEOUT := 7.00
 const HARD_TIMEOUT := 11.0
 
-enum St { PLACE, AIM, RESOLVE, WON, LOST }
+enum St { PLACE, AIM, RESOLVE, AI_TURN, WON, LOST }
+
+const ACTOR_PLAYER := 0
+const ACTOR_AI := 1
 
 var state: St = St.PLACE
 var level_idx := 0
@@ -39,6 +42,15 @@ var level: Dictionary
 var bag: Array[String] = []
 var bag_used: Array[bool] = []
 var selected := 0
+
+# Knockout only: the AI keeps its own bag and launches from the far strip.
+var ai_bag: Array[String] = []
+var ai_bag_used: Array[bool] = []
+var ai_selected := 0
+var turn_actor := ACTOR_PLAYER
+var match_points := [0, 0]
+var is_knockout := false
+var _ai: MarbleAI = null
 
 var shots_left := 0
 var goal := 0
@@ -271,6 +283,18 @@ func load_level(idx: int) -> void:
 		bag_used.append(false)
 	selected = 0
 
+	is_knockout = level["mode"] == "knockout"
+	match_points = [0, 0]
+	turn_actor = ACTOR_PLAYER
+	ai_bag.clear()
+	ai_bag_used.clear()
+	ai_selected = 0
+	if is_knockout:
+		ai_bag.assign(level["ai_bag"])
+		for i in ai_bag.size():
+			ai_bag_used.append(false)
+		_ai = MarbleAI.new(level["ai_level"])
+
 	shots_left = level["shots"]
 	goal = level["goal"]
 	progress = 0
@@ -291,10 +315,11 @@ func load_level(idx: int) -> void:
 	_hud.flash(level["name"], level["hint"])
 
 
-func _spawn_marble(id: String, pos: Vector3, as_target: bool) -> Marble:
+func _spawn_marble(id: String, pos: Vector3, as_target: bool, owner: int = -1) -> Marble:
 	var m := Marble.new()
 	_dynamic.add_child(m)
 	m.setup(id, as_target)
+	m.owner_id = owner
 	m.position = pos
 	m.settled.connect(_on_marble_settled)
 	m.hit_marble.connect(_on_hit_marble.bind(m))
@@ -394,11 +419,19 @@ func _mouse_to_table() -> Vector3:
 	return hit if hit != null else Vector3.ZERO
 
 
-func _clamp_to_zone(p: Vector3) -> Vector3:
+func _clamp_to_zone(p: Vector3, actor: int = ACTOR_PLAYER) -> Vector3:
+	var z := zone_for(actor)
 	return Vector3(
-		clampf(p.x, -LZ_X, LZ_X),
+		clampf(p.x, z.position.x, z.position.x + z.size.x),
 		MarbleData.RADIUS,
-		clampf(p.z, LZ_Z_NEAR, LZ_Z_FAR))
+		clampf(p.z, z.position.y, z.position.y + z.size.y))
+
+
+## §12 — the AI launches from the mirrored strip on the far side.
+func zone_for(actor: int) -> Rect2:
+	if actor == ACTOR_AI:
+		return Rect2(-LZ_X, -LZ_Z_FAR, LZ_X * 2.0, LZ_Z_FAR - LZ_Z_NEAR)
+	return Rect2(-LZ_X, LZ_Z_NEAR, LZ_X * 2.0, LZ_Z_FAR - LZ_Z_NEAR)
 
 
 # §13 — placement may not overlap anything.
@@ -424,12 +457,17 @@ func _try_place() -> void:
 	_aiming = true
 
 
-func _place(p: Vector3) -> bool:
-	if shots_left <= 0 or selected >= bag.size() or bag_used[selected]:
+func _place(p: Vector3, actor: int = ACTOR_PLAYER) -> bool:
+	var b: Array[String] = ai_bag if actor == ACTOR_AI else bag
+	var used: Array[bool] = ai_bag_used if actor == ACTOR_AI else bag_used
+	var slot: int = ai_selected if actor == ACTOR_AI else selected
+	if slot >= b.size() or used[slot]:
+		return false
+	if actor == ACTOR_PLAYER and shots_left <= 0:
 		return false
 	if not _placement_valid(p):
 		return false
-	_held = _spawn_marble(bag[selected], p, false)
+	_held = _spawn_marble(b[slot], p, false, actor)
 	# Deliberately NOT frozen. A marble placed at rest height just sits there,
 	# and unfreezing on the same frame the shot velocity is written loses the
 	# velocity — the body is still kinematic when the write lands.
@@ -439,14 +477,18 @@ func _place(p: Vector3) -> bool:
 ## §69 — the single entry point a shot goes through, whoever authored it.
 ## Human input builds one of these by placing and dragging; the AI and the
 ## headless tests build one directly; a network client will post one.
-func submit_shot(place: Vector2, dir: Vector3, power: float) -> bool:
-	if state != St.PLACE:
+func submit_shot(place: Vector2, dir: Vector3, power: float,
+		actor: int = ACTOR_PLAYER) -> bool:
+	if actor == ACTOR_PLAYER and state != St.PLACE:
 		return false
-	if not _place(_clamp_to_zone(Vector3(place.x, MarbleData.RADIUS, place.y))):
+	if actor == ACTOR_AI and state != St.AI_TURN:
+		return false
+	var p := _clamp_to_zone(Vector3(place.x, MarbleData.RADIUS, place.y), actor)
+	if not _place(p, actor):
 		return false
 	_aim_dir = dir.normalized()
 	_aim_power = clampf(power, 0.0, 1.0)
-	_fire()
+	_fire(actor)
 	return true
 
 
@@ -459,7 +501,7 @@ func _cancel_placement() -> void:
 	state = St.PLACE
 
 
-func _fire() -> void:
+func _fire(actor: int = ACTOR_PLAYER) -> void:
 	var m := _held
 	_held = null
 
@@ -473,9 +515,16 @@ func _fire() -> void:
 		"lost": 0,
 	}
 	m.launch(_aim_dir, _aim_power)
-	bag_used[selected] = true
-	shots_left -= 1
-	_advance_selection()
+	if actor == ACTOR_AI:
+		ai_bag_used[ai_selected] = true
+		for i in ai_bag.size():
+			if not ai_bag_used[i]:
+				ai_selected = i
+				break
+	else:
+		bag_used[selected] = true
+		shots_left -= 1
+		_advance_selection()
 	_audio.impact(1.2 + _aim_power * 2.5)
 	state = St.RESOLVE
 	_resolve_time = 0.0
@@ -606,7 +655,16 @@ func _check_captures() -> void:
 		if absf(p.x) > ARENA_W * 0.5 + OUT_MARGIN \
 				or absf(p.z) > ARENA_D * 0.5 + OUT_MARGIN or p.y < KILL_Y:
 			m.mark_captured("lost")
-			if not m.is_target:
+			# §45 — in Knockout the point goes to the other side regardless of
+			# who knocked it off, including knocking out your own marble.
+			if is_knockout and m.owner_id >= 0:
+				match_points[1 - m.owner_id] += 1
+				if m.owner_id == ACTOR_AI:
+					score += 1000
+				else:
+					score -= 250
+				_pop()
+			elif not m.is_target:
 				score -= 250
 				_shot_ctx["lost"] = _shot_ctx.get("lost", 0) + 1
 			continue
@@ -658,6 +716,10 @@ func _end_shot() -> void:
 		else:
 			m.shot_this_turn = false
 
+	if is_knockout:
+		_end_knockout_turn()
+		return
+
 	if progress >= goal:
 		score += shots_left * 200          # §49 unused shots
 		score += 300                       # §54 perfect finish on the last shot
@@ -671,6 +733,177 @@ func _end_shot() -> void:
 		return
 
 	state = St.PLACE
+
+
+# §43-47 — alternate turns until both bags are empty, then compare points.
+func _end_knockout_turn() -> void:
+	var player_done: bool = shots_left <= 0
+	var ai_done := true
+	for u in ai_bag_used:
+		if not u:
+			ai_done = false
+			break
+
+	if player_done and ai_done:
+		_resolve_knockout()
+		return
+
+	# Hand over, skipping a side that has nothing left to play.
+	turn_actor = ACTOR_AI if turn_actor == ACTOR_PLAYER else ACTOR_PLAYER
+	if turn_actor == ACTOR_AI and ai_done:
+		turn_actor = ACTOR_PLAYER
+	elif turn_actor == ACTOR_PLAYER and player_done:
+		turn_actor = ACTOR_AI
+
+	if turn_actor == ACTOR_AI:
+		_begin_ai_turn()
+	else:
+		state = St.PLACE
+
+
+func _resolve_knockout() -> void:
+	var p: int = match_points[ACTOR_PLAYER]
+	var a: int = match_points[ACTOR_AI]
+	if p > a:
+		state = St.WON
+		_hud.flash("MATCH WON", "%d - %d  ·  N for next level  ·  R to retry" % [p, a])
+		return
+	if p < a:
+		state = St.LOST
+		_hud.flash("MATCH LOST", "%d - %d  ·  R to retry" % [p, a])
+		return
+
+	# §47 tie-break: whichever side's surviving marbles sit further from an edge.
+	var safety := [0.0, 0.0]
+	for m in marbles:
+		if not is_instance_valid(m) or m.owner_id < 0:
+			continue
+		if m.state == Marble.State.CAPTURED or m.state == Marble.State.SUNK \
+				or m.state == Marble.State.LOST:
+			continue
+		safety[m.owner_id] += minf(
+			ARENA_W * 0.5 - absf(m.position.x),
+			ARENA_D * 0.5 - absf(m.position.z))
+
+	var diff: float = safety[ACTOR_PLAYER] - safety[ACTOR_AI]
+	if absf(diff) < 0.01:
+		state = St.LOST
+		_hud.flash("DRAW", "%d - %d  ·  a draw does not clear the level  ·  R to retry" % [p, a])
+	elif diff > 0.0:
+		state = St.WON
+		_hud.flash("MATCH WON", "%d - %d on safety  ·  N for next level" % [p, a])
+	else:
+		state = St.LOST
+		_hud.flash("MATCH LOST", "%d - %d on safety  ·  R to retry" % [p, a])
+
+
+func _begin_ai_turn() -> void:
+	state = St.AI_TURN
+	_ghost.visible = false
+	_aim_line.visible = false
+	_pull_line.visible = false
+	_run_ai_turn()
+
+
+## Think, then shoot. The pause is partly so the player can see whose turn it
+## is, and partly so a 1.5 s search does not look like a freeze.
+func _run_ai_turn() -> void:
+	await _ai_pause(0.45)
+	if state != St.AI_TURN:
+		return
+
+	var shot: Dictionary = _ai.choose_shot(_board_for_ai(), ACTOR_AI)
+	if shot.is_empty():
+		# Nothing playable — treat the turn as spent rather than hanging.
+		for i in ai_bag_used.size():
+			ai_bag_used[i] = true
+		_end_knockout_turn()
+		return
+
+	ai_selected = shot["slot"]
+	await _ai_pause(0.25)
+	if state != St.AI_TURN:
+		return
+
+	# The AI's own spent marbles accumulate in its launch strip, so the spot it
+	# picked may be occupied. Slide along the strip to the nearest free one.
+	var place: Vector2 = _nearest_free_placement(shot["place"], ACTOR_AI)
+	var d: Vector2 = shot["dir"]
+	if not submit_shot(place, Vector3(d.x, 0, d.y), shot["power"], ACTOR_AI):
+		# Nothing playable at all: spend the turn rather than stalling the
+		# match. Without this the state machine sits in AI_TURN forever.
+		push_warning("AI could not place a marble; skipping its turn")
+		ai_bag_used[ai_selected] = true
+		_end_knockout_turn()
+
+
+## Walks outward from `want` along the launch strip for a legal spot.
+func _nearest_free_placement(want: Vector2, actor: int) -> Vector2:
+	var zone := zone_for(actor)
+	var z: float = zone.position.y + zone.size.y * 0.5
+	var start: float = clampf(want.x, zone.position.x, zone.position.x + zone.size.x)
+	if _placement_valid(Vector3(start, MarbleData.RADIUS, z)):
+		return Vector2(start, z)
+
+	var step := PLACE_MIN_DIST * 0.5
+	var reach: float = zone.size.x
+	var offset := step
+	while offset <= reach:
+		for s in [1.0, -1.0]:
+			var x: float = start + offset * s
+			if x < zone.position.x or x > zone.position.x + zone.size.x:
+				continue
+			if _placement_valid(Vector3(x, MarbleData.RADIUS, z)):
+				return Vector2(x, z)
+		offset += step
+	return Vector2(start, z)
+
+
+## What the AI is allowed to see — exactly what is on the table.
+## A beat so the player can see whose turn it is. Skipped when there is no
+## display, so headless test runs are not paced by cosmetics.
+func _ai_pause(seconds: float) -> void:
+	if DisplayServer.get_name() == "headless":
+		await get_tree().process_frame
+		return
+	await get_tree().create_timer(seconds).timeout
+
+
+func _board_for_ai() -> Dictionary:
+	var live := []
+	var aim_points: Array[Vector2] = []
+	for m in marbles:
+		if not is_instance_valid(m):
+			continue
+		if m.state == Marble.State.CAPTURED or m.state == Marble.State.SUNK \
+				or m.state == Marble.State.LOST:
+			continue
+		var own: int = m.owner_id if m.owner_id >= 0 else ShotSim.Owner.TARGET
+		live.append({"pos": Vector2(m.position.x, m.position.z), "id": m.def_id,
+					 "owner": own})
+		if own != ACTOR_AI:
+			aim_points.append(Vector2(m.position.x, m.position.z))
+
+	var reserve := []
+	for i in ai_bag.size():
+		if not ai_bag_used[i]:
+			reserve.append({"slot": i, "id": ai_bag[i]})
+
+	var bump := PackedVector3Array()
+	for p in level.get("bumpers", []):
+		bump.append(Vector3(p.x, p.y, BUMPER_R))
+
+	return {
+		"marbles": live,
+		"reserve": reserve,
+		"aim_points": aim_points,
+		"launch_zone": zone_for(ACTOR_AI),
+		"half_w": ARENA_W * 0.5,
+		"half_d": ARENA_D * 0.5,
+		"ring_out_dist": RING_OUT_DIST if level["mode"] == "ringer" else 0.0,
+		"holes": PackedVector2Array(holes),
+		"bumpers": bump,
+	}
 
 
 # §42 — fail immediately once the objective is arithmetically unreachable.

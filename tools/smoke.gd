@@ -42,6 +42,8 @@ func _play(game, idx: int) -> void:
 	await physics_frame
 
 	var lvl: Dictionary = Levels.ALL[idx]
+	if lvl["mode"] == "knockout":
+		return      # covered by tools/ai_test.gd, which drives both sides
 	var shots := 0
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 1234 + idx
@@ -69,7 +71,8 @@ func _play(game, idx: int) -> void:
 
 		var waited := 0.0
 		var step := 1.0 / Engine.physics_ticks_per_second
-		while game.state == game.St.RESOLVE and waited < MAX_WAIT:
+		while (game.state == game.St.RESOLVE or game.state == game.St.AI_TURN) \
+				and waited < MAX_WAIT:
 			await physics_frame
 			waited += step
 

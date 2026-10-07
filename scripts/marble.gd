@@ -26,6 +26,7 @@ var def_id := "standard"
 var def: Dictionary
 var state: State = State.RESERVE
 var is_target := false
+var owner_id := -1            # 0 player, 1 AI, -1 neutral target
 var shot_this_turn := false
 var has_triggered_stop_ability := false
 

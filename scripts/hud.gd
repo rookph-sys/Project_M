@@ -120,8 +120,19 @@ func _process(delta: float) -> void:
 
 
 func refresh(g) -> void:
-	var mode: String = "RING OUT" if g.level["mode"] == "ringer" else "SINK"
-	_top.text = "%s  %d / %d          SHOTS  %d" % [mode, g.progress, g.goal, g.shots_left]
+	if g.is_knockout:
+		var ai_left := 0
+		for u in g.ai_bag_used:
+			if not u:
+				ai_left += 1
+		var turn: String = "YOUR TURN" if g.turn_actor == g.ACTOR_PLAYER else "OPPONENT"
+		if g.state == g.St.RESOLVE:
+			turn = ""
+		_top.text = "YOU %d  —  %d AI          SHOTS  %d / %d        %s" % [
+			g.match_points[0], g.match_points[1], g.shots_left, ai_left, turn]
+	else:
+		var mode: String = "RING OUT" if g.level["mode"] == "ringer" else "SINK"
+		_top.text = "%s  %d / %d          SHOTS  %d" % [mode, g.progress, g.goal, g.shots_left]
 	_score.text = "SCORE  %d" % g.score
 	_power_fill.size.x = 320.0 * g._aim_power
 	_power_fill.color = Color(0.45, 1.0, 0.65).lerp(Color(1.0, 0.35, 0.25), g._aim_power)
