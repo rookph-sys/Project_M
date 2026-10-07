@@ -81,6 +81,12 @@ func _play(game, idx: int) -> void:
 				% [idx + 1, lvl["name"], MAX_WAIT])
 			_fail += 1
 			return
+		# A scoring event that never reached the cascade is a dropped point.
+		if not game._pending_pops.is_empty():
+			print("  L%d %-18s  %d scoring event(s) left unshown"
+				% [idx + 1, lvl["name"], game._pending_pops.size()])
+			_fail += 1
+			return
 		if waited > 4.0:
 			print("  L%d %-18s  slow shot: %.1fs to settle" % [idx + 1, lvl["name"], waited])
 

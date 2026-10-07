@@ -377,7 +377,7 @@ func _update_trail() -> void:
 	for i in _trail_pts.size():
 		var t := float(i) / float(_trail_pts.size() - 1)
 		# Taper to nothing at the tail so it reads as motion, not a stick.
-		var half: float = MarbleData.RADIUS * 0.75 * t
+		var half: float = MarbleData.RADIUS * 0.75 * t * clampf(speed / 3.0, 0.4, 1.3)
 		var dir: Vector3 = (_trail_pts[mini(i + 1, _trail_pts.size() - 1)] - _trail_pts[maxi(i - 1, 0)])
 		dir.y = 0.0
 		if dir.length() < 0.0001:
@@ -385,9 +385,12 @@ func _update_trail() -> void:
 		var side := dir.normalized().cross(Vector3.UP) * half
 		var p: Vector3 = _trail_pts[i]
 		p.y = 0.02
-		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, 0.55 * t * t))
+		# Brighter the faster it is going, so a fast marble leaves a streak and a
+		# slow one barely marks the table.
+		var a: float = clampf(speed / 4.0, 0.15, 1.0) * 0.7 * t * t
+		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, a))
 		_trail_mesh.surface_add_vertex(p - side)
-		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, 0.55 * t * t))
+		_trail_mesh.surface_set_color(Color(col.r, col.g, col.b, a))
 		_trail_mesh.surface_add_vertex(p + side)
 	_trail_mesh.surface_end()
 

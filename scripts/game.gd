@@ -385,6 +385,7 @@ func load_level(idx: int) -> void:
 	_aiming = false
 	_slowmo_fired = false
 	_end_slowmo()
+	_clutch_armed = false
 	_pending_pops.clear()
 	_cascade_running = false
 
@@ -651,6 +652,9 @@ func _advance_selection() -> void:
 func _process(delta: float) -> void:
 	_tick_slowmo()
 	_update_danger()
+	_update_clutch()
+	if not _cascade_running:
+		_audio.settle_music(_settings.music_volume)
 	# One source of truth for which layer is showing.
 	if _menu:
 		_hud.visible = not _menu.visible
@@ -733,7 +737,14 @@ func _physics_process(delta: float) -> void:
 	for m in marbles:
 		if not is_instance_valid(m):
 			continue
-		if m.state == Marble.State.ACTIVE and not m.is_resting():
+		# Anything still moving holds the turn open, not just marbles that were
+		# shot. Targets are never in ACTIVE state, so checking for that alone
+		# let a turn end while reds were still rolling toward the line — their
+		# ring-out then landed after the shot had already been resolved.
+		if m.state == Marble.State.CAPTURED or m.state == Marble.State.SUNK \
+				or m.state == Marble.State.LOST:
+			continue
+		if not m.is_resting():
 			moving += 1
 
 	# §35 — graded sweep rather than one cliff at 10 s. A single marble settles
@@ -1134,7 +1145,7 @@ func _board_for_ai() -> Dictionary:
 
 
 func _score_shot() -> void:
-	if _shot_ctx.is_empty():
+	if not _shot_ctx.has("marble"):
 		return
 	var scoring: int = _shot_ctx.get("ring_outs", 0) + _shot_ctx.get("sinks", 0)
 	if scoring == 0:
@@ -1155,9 +1166,9 @@ func _score_shot() -> void:
 		if by != "":
 			match_stats["bank_shot_by"][by] = match_stats["bank_shot_by"].get(by, 0) + 1
 
-	# §52 chain — scoring targets the shooter never touched itself.
+	# §52 chain — still tracked for objectives, but no longer paid a flat
+	# bonus: the cascade multiplier now rewards chain length instead.
 	var indirect: int = maxi(0, scoring - direct)
-	score += indirect * 125
 	if indirect > 0:
 		match_stats["chain_hits"] += 1
 
@@ -1199,7 +1210,9 @@ func _magnet_pulse(src: Marble) -> void:
 func _on_hit_marble(other: Marble, speed: float, src: Marble) -> void:
 	_audio.impact(speed)
 	_impact_feedback(src, other, speed)
-	if _shot_ctx.is_empty() or _shot_ctx["marble"] != src:
+	# `get`, not `[]`: a capture that lands after the context was closed can
+	# recreate the dictionary with only its own counters in it.
+	if _shot_ctx.get("marble") != src:
 		return
 
 	# OnFirstCollision (§13) — once per shot, on the first marble touched.
@@ -1218,7 +1231,9 @@ func _on_hit_surface(body: Node, speed: float, src: Marble) -> void:
 	var is_bank: bool = body.has_meta("bank_surface")
 	if is_bank:
 		_audio.impact(speed, true)
-	if _shot_ctx.is_empty() or _shot_ctx["marble"] != src:
+	# `get`, not `[]`: a capture that lands after the context was closed can
+	# recreate the dictionary with only its own counters in it.
+	if _shot_ctx.get("marble") != src:
 		return
 	# The floor is a surface too, and every marble rests on it — only a real
 	# bank surface counts, and only before the shooter reaches a target (§50).
@@ -1510,6 +1525,7 @@ func _impact_feedback(a: Marble, b: Marble, speed: float) -> void:
 	# A freeze only on contacts worth noticing, or it feels like stutter.
 	if hard > 0.55:
 		_juice.hit_stop(HIT_STOP_LIGHT + (hard - 0.55) * HIT_STOP_HEAVY)
+		_juice.shockwave(a.global_position.lerp(b.global_position, 0.5), hard)
 
 
 ## A scoring event: the number flies, the combo climbs, the screen reacts.
@@ -1533,13 +1549,16 @@ func _run_cascade(done: Callable) -> void:
 	_cascade_running = true
 	var first := true
 	while not _pending_pops.is_empty():
-		await get_tree().create_timer(CASCADE_FIRST if first else CASCADE_GAP).timeout
+		# process_always + ignore_time_scale: the chain keeps a steady beat even
+		# though its own hit-stops pause the tree and the clutch slows time.
+		await get_tree().create_timer(
+			CASCADE_FIRST if first else CASCADE_GAP, true, false, true).timeout
 		first = false
 		if not is_inside_tree():
 			return
 		_show_pop(_pending_pops.pop_front())
 	# A last beat so the final number is read before the banner lands on it.
-	await get_tree().create_timer(0.30).timeout
+	await get_tree().create_timer(0.30, true, false, true).timeout
 	_cascade_running = false
 	if is_inside_tree():
 		done.call()
@@ -1551,9 +1570,18 @@ func _show_pop(e: Dictionary) -> void:
 	var color: Color = e["color"]
 	# Score is added here, not when the marble crossed the line, so the HUD
 	# count-up climbs in step with the popups instead of racing ahead of them.
-	score += e["points"]
+	# §52 deliberately kept Combo cosmetic to avoid double-dipping with the
+	# flat Multi Hit and Chain bonuses. Making it a real multiplier is a design
+	# change, so the flat Chain bonus is removed below to pay for it: chain
+	# length is now rewarded here and nowhere else.
+	var mult: int = _combo_in_shot
+	var gained: int = e["points"] * mult
+	score += gained
 
-	_juice.popup(at, "+%d" % e["points"], color, _combo_in_shot - 1)
+	var text: String = "+%d" % gained
+	if mult > 1:
+		text = "+%d  ×%d" % [e["points"], mult]
+	_juice.popup(at, text, color, _combo_in_shot - 1)
 	_juice.combo(_combo_in_shot)
 	_juice.flash(color, 0.05 + _combo_in_shot * 0.02)
 	_juice.hit_stop(HIT_STOP_LIGHT + _combo_in_shot * 0.012)
@@ -1561,7 +1589,9 @@ func _show_pop(e: Dictionary) -> void:
 	_cam_zoom = maxf(_cam_zoom, 0.3)
 	# Each link rings a step higher — the escalation is the reward.
 	_audio.score_event(0.9 + _combo_in_shot * 0.18)
+	_audio.swell(minf(_combo_in_shot * 0.3, 1.2), _settings.music_volume)
 	_spawn_sparks(at, color, 1.0 + _combo_in_shot * 0.25)
+	_juice.shockwave(at, clampf(0.45 + _combo_in_shot * 0.2, 0.0, 1.0))
 
 
 func _spawn_sparks(at: Vector3, color: Color, strength: float) -> void:
@@ -1661,3 +1691,70 @@ func _celebrate() -> void:
 				_juice.flash(Color(1.0, 0.9, 0.5), 0.07))
 	_cam_shake = maxf(_cam_shake, 1.4)
 	_cam_zoom = maxf(_cam_zoom, 0.5)
+
+
+## §54 — the held breath. When one target is left and it is creeping toward
+## the line, drop into slow motion so the moment it decides gets watched.
+const CLUTCH_SPEED_MAX := 1.4
+
+var _clutch_armed := false
+
+
+func _update_clutch() -> void:
+	if state != St.RESOLVE or not _settings.slow_motion or is_versus:
+		return
+	var live := _live_targets()
+	var needed := 0
+	for o in level.get("primary", []):
+		if o["type"] in ["ring_out", "sink"]:
+			needed = maxi(needed, int(o.get("count", 1)) - int(match_stats.get(
+				"ring_outs" if o["type"] == "ring_out" else "sinks", 0)))
+	# Only when a single marble stands between the player and the level.
+	if needed != 1 or live != 1:
+		_release_clutch()
+		return
+
+	var t: Marble = null
+	for m in targets:
+		if is_instance_valid(m) and m.state == Marble.State.RESERVE:
+			t = m
+	if t == null:
+		_release_clutch()
+		return
+
+	var d := Vector2(t.position.x, t.position.z).length()
+	var speed := t.linear_velocity.length()
+	var close: bool = d > RING_OUT_DIST * 0.80 and speed > 0.05 and speed < CLUTCH_SPEED_MAX
+	if close and not _clutch_armed:
+		_clutch_armed = true
+		Engine.time_scale = 0.45
+	elif not close and _clutch_armed:
+		_release_clutch()
+
+
+func _release_clutch() -> void:
+	if _clutch_armed:
+		_clutch_armed = false
+		if _slowmo_until_ms == 0:
+			Engine.time_scale = 1.0
+
+
+var _cam_follow := Vector3.ZERO
+
+
+## Where the action is: the fastest-moving marble, weighted by its speed, so a
+## still board recentres the camera on its own.
+func _busiest_point() -> Vector3:
+	var best: Marble = null
+	var best_speed := 0.6          # below this, nothing is worth following
+	for m in marbles:
+		if not is_instance_valid(m) or m.state != Marble.State.ACTIVE:
+			continue
+		var s := m.linear_velocity.length()
+		if s > best_speed:
+			best_speed = s
+			best = m
+	if best == null:
+		return Vector3.ZERO
+	return Vector3(best.position.x, 0.0, best.position.z) \
+		* clampf(best_speed / 3.0, 0.0, 1.0)

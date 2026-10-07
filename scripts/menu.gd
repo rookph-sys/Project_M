@@ -213,9 +213,20 @@ func show_deck() -> void:
 	gap.custom_minimum_size = Vector2(0, 18)
 	_body.add_child(gap)
 
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 24)
+	_body.add_child(head)
+	if _preview_vp == null:
+		head.add_child(_make_preview())
+	else:
+		var r := TextureRect.new()
+		r.texture = _preview_vp.get_texture()
+		r.custom_minimum_size = Vector2(220, 220)
+		r.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		head.add_child(r)
 	var avail := _label(16, Color(0.6, 0.66, 0.78))
 	avail.text = "AVAILABLE"
-	_body.add_child(avail)
+	head.add_child(avail)
 
 	for id in Levels.allowed_marbles(lvl, prog):
 		var d: Dictionary = MarbleData.get_def(id)
@@ -224,11 +235,15 @@ func show_deck() -> void:
 		var b := _button("%-11s %s%s" % [d["name"], d["desc"], loaned], legal)
 		b.add_theme_color_override("font_color", d["color"])
 		b.pressed.connect(_on_marble_added.bind(id))
+		b.mouse_entered.connect(set_preview.bind(id))
 		_body.add_child(b)
 
 	var gap2 := Control.new()
 	gap2.custom_minimum_size = Vector2(0, 14)
 	_body.add_child(gap2)
+
+	if _preview_id == "":
+		set_preview(_bag[0] if not _bag.is_empty() and _bag[0] != "" else "standard")
 
 	var full: bool = _filled() == SLOTS
 	var start := _button("START  —  %d / %d slots filled" % [_filled(), SLOTS], full)
@@ -464,3 +479,74 @@ func _choice(label: String, options: Array, index: int, on_set: Callable) -> voi
 			settings.save()
 			show_settings())
 		row.add_child(b)
+
+
+# ---------------------------------------------------- 3D marble preview ----
+#
+# A real marble turning in a SubViewport, rather than a coloured rectangle.
+# One viewport, reused — eight of them would cost eight renders a frame for a
+# screen that is mostly reading text.
+
+var _preview_vp: SubViewport
+var _preview_marble: MeshInstance3D
+var _preview_id := ""
+
+
+func _make_preview() -> TextureRect:
+	_preview_vp = SubViewport.new()
+	_preview_vp.size = Vector2i(220, 220)
+	_preview_vp.transparent_bg = true
+	_preview_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	add_child(_preview_vp)
+
+	var world := Node3D.new()
+	_preview_vp.add_child(world)
+
+	var cam3d := Camera3D.new()
+	cam3d.position = Vector3(0, 0.07, 0.34)
+	cam3d.fov = 40.0
+	world.add_child(cam3d)
+	cam3d.look_at(Vector3.ZERO, Vector3.UP)
+
+	var key := DirectionalLight3D.new()
+	key.rotation_degrees = Vector3(-35, -40, 0)
+	key.light_energy = 2.2
+	world.add_child(key)
+
+	_preview_marble = MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.10
+	sm.height = 0.20
+	sm.radial_segments = 48
+	sm.rings = 24
+	_preview_marble.mesh = sm
+	world.add_child(_preview_marble)
+
+	var rect := TextureRect.new()
+	rect.texture = _preview_vp.get_texture()
+	rect.custom_minimum_size = Vector2(220, 220)
+	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	return rect
+
+
+func set_preview(id: String) -> void:
+	if _preview_marble == null or id == _preview_id or not MarbleData.DEFS.has(id):
+		return
+	_preview_id = id
+	var d: Dictionary = MarbleData.get_def(id)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = d["color"]
+	mat.metallic = 0.35
+	mat.metallic_specular = 0.85
+	mat.roughness = 0.08
+	mat.rim_enabled = true
+	mat.rim = 0.85
+	mat.clearcoat_enabled = true
+	mat.clearcoat = 0.9
+	_preview_marble.material_override = mat
+
+
+func _process(delta: float) -> void:
+	if _preview_marble and visible:
+		_preview_marble.rotate_y(delta * 1.1)
+		_preview_marble.rotate_x(delta * 0.35)

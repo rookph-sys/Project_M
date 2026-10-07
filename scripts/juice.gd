@@ -37,10 +37,13 @@ func setup(camera: Camera3D, opts: Settings) -> void:
 
 	_combo_label = _make_label(72)
 	_combo_label.modulate.a = 0.0
-	_combo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_combo_label.anchor_left = 0.0
-	_combo_label.anchor_right = 1.0
-	_combo_label.offset_top = 250
+	# Parked on the empty left side rather than centred: popups fly out from
+	# wherever the marble crossed the line, and a centred combo sat on top of
+	# them about half the time.
+	_combo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_combo_label.anchor_top = 0.5
+	_combo_label.offset_left = 62
+	_combo_label.offset_top = -40
 	add_child(_combo_label)
 
 
@@ -142,3 +145,55 @@ func _shake_scale() -> float:
 	# The screen-shake slider governs full-screen effects too: someone who
 	# turned shake down did not ask for the screen to strobe instead.
 	return settings.screen_shake if settings else 1.0
+
+
+# --------------------------------------------------- impact distortion ----
+
+var _shock: ColorRect
+var _shock_mat: ShaderMaterial
+var _shock_t := 0.0
+var _shock_power := 0.0
+
+
+func _ready() -> void:
+	_shock = ColorRect.new()
+	_shock.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_shock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_shock_mat = ShaderMaterial.new()
+	_shock_mat.shader = load("res://shaders/impact.gdshader")
+	_shock.material = _shock_mat
+	# Behind the popups and the flash, in front of the 3D view.
+	add_child(_shock)
+	move_child(_shock, 0)
+	_shock_mat.set_shader_parameter("strength", 0.0)
+
+
+## Kick a shockwave off from a world point.
+func shockwave(world_pos: Vector3, power: float) -> void:
+	if cam == null or _shock_mat == null:
+		return
+	# Honour the shake slider: this is a full-screen effect and someone who
+	# turned shake off did not ask for the picture to warp instead.
+	var p: float = clampf(power, 0.0, 1.0) * _shake_scale()
+	if p <= 0.02 or p < _shock_power * 0.6:
+		return
+	var vp := get_viewport().get_visible_rect().size
+	var at := cam.unproject_position(world_pos)
+	_shock_mat.set_shader_parameter("centre", at / vp)
+	_shock_mat.set_shader_parameter("aspect", vp.x / maxf(vp.y, 1.0))
+	_shock_power = p
+	_shock_t = 0.0
+
+
+func _process(delta: float) -> void:
+	if _shock_power <= 0.001:
+		return
+	_shock_t += delta * 2.6
+	if _shock_t >= 1.0:
+		_shock_power = 0.0
+		_shock_mat.set_shader_parameter("strength", 0.0)
+		return
+	var fade: float = _shock_power * (1.0 - _shock_t)
+	_shock_mat.set_shader_parameter("wave", _shock_t * 0.75)
+	_shock_mat.set_shader_parameter("strength", fade)
+	_shock_mat.set_shader_parameter("aberration", fade * 2.2)

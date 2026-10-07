@@ -251,3 +251,22 @@ func stop_charge() -> void:
 func release(power: float) -> void:
 	stop_charge()
 	_play(_whoosh, 0.8 + power * 0.7, 0.25 + power * 0.5)
+
+
+## Lift the bed while a chain is resolving, then let it fall back. The music
+## leaning in during a cascade is doing the same job as the rising popup
+## pitches — telling you this one is bigger than the last.
+func swell(amount: float, base_volume: float) -> void:
+	if _music == null:
+		return
+	var target: float = clampf(base_volume * (1.0 + amount * 0.9), 0.0, 1.0)
+	_music.volume_db = linear_to_db(maxf(target, 0.0001))
+	_music.pitch_scale = clampf(1.0 + amount * 0.12, 0.5, 2.0)
+
+
+func settle_music(base_volume: float) -> void:
+	if _music == null:
+		return
+	_music.volume_db = lerpf(_music.volume_db,
+		linear_to_db(maxf(base_volume, 0.0001)), 0.04)
+	_music.pitch_scale = lerpf(_music.pitch_scale, 1.0, 0.05)
