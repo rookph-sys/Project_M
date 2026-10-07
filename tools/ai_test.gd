@@ -9,7 +9,7 @@ extends SceneTree
 ## of its shots achieve anything. An AI that cannot beat a bot firing roughly
 ## at the opposing marbles is not worth shipping.
 
-const MATCHES := 3
+const MATCHES := 1
 
 var _results := []
 
@@ -24,7 +24,7 @@ func _run() -> void:
 	await physics_frame
 	await physics_frame
 
-	for level_idx in [7, 9]:      # First Duel (Easy) and Final Table (Normal)
+	for level_idx in range(Levels.count()):
 		print("")
 		var lvl: Dictionary = Levels.ALL[level_idx]
 		print("  %s — AI %s" % [lvl["name"],

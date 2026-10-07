@@ -363,8 +363,10 @@ func load_level(idx: int) -> void:
 		bag_used.append(false)
 	selected = 0
 
-	is_versus = level["mode"] == "duel"
-	has_ring = level["mode"] == "ringer" or level["mode"] == "duel"
+	# An opponent is a property of the level, not of the mode: a Holes level or
+	# a Trial can be contested too.
+	is_versus = level.has("ai_level")
+	has_ring = level["mode"] == "ringer"
 	match_points = [0, 0]
 	turn_actor = ACTOR_PLAYER
 	ai_bag.clear()
@@ -771,12 +773,11 @@ func _physics_process(delta: float) -> void:
 
 	if moving == 0:
 		_stable_time += delta
-		if _stable_time >= RESOLVE_STABLE and not _cascade_running:
-			# Play the scoring chain out before deciding anything.
-			if _pending_pops.is_empty():
-				_end_shot()
-			else:
-				_run_cascade(_end_shot)
+		# The shot is over once the board has settled AND the scoring chain has
+		# finished playing out.
+		if _stable_time >= RESOLVE_STABLE and not _cascade_running \
+				and _pending_pops.is_empty():
+			_end_shot()
 	else:
 		_stable_time = 0.0
 
@@ -817,9 +818,16 @@ func _check_captures() -> void:
 				m.mark_captured("sunk")
 				_audio.sink()
 				if m.is_target and level["mode"] == "holes":
-					match_stats["sinks"] += 1
+					if is_versus:
+						match_points[turn_actor] += 1
+					if turn_actor == ACTOR_PLAYER:
+						match_stats["sinks"] += 1
 					_shot_ctx["sinks"] = _shot_ctx.get("sinks", 0) + 1
-					_pop(p, 1000, Color(0.5, 0.85, 1.0))
+					if is_versus and turn_actor != ACTOR_PLAYER:
+						_juice.popup(p, "AI +1", HALO_AI, 0)
+						_audio.score_event(0.7)
+					else:
+						_pop(p, 1000, Color(0.5, 0.85, 1.0))
 				elif not m.is_target:
 					score -= 250     # §40
 					match_stats["marbles_lost"] += 1
@@ -1540,17 +1548,23 @@ func _impact_feedback(a: Marble, b: Marble, speed: float) -> void:
 ## you watch — it is most of what makes Balatro's scoring feel the way it does.
 func _score_feedback(at: Vector3, points: int, color: Color) -> void:
 	_pending_pops.append({"at": at, "points": points, "color": color})
+	# Start draining straight away rather than waiting for the whole board to
+	# come to rest. Waiting made the chain read as a sequence, but it also meant
+	# a marble could leave the ring and the points not arrive for seconds while
+	# something else trundled to a halt.
+	if not _cascade_running:
+		_run_cascade()
 
 
-const CASCADE_GAP := 0.26          # seconds between links in a chain
-const CASCADE_FIRST := 0.10        # a shorter beat before the first
+const CASCADE_GAP := 0.15          # seconds between links in a chain
+const CASCADE_FIRST := 0.02        # the first one lands almost immediately
 
 var _pending_pops: Array = []
 var _cascade_running := false
 
 
 ## Plays the queue out, then hands back to whoever asked.
-func _run_cascade(done: Callable) -> void:
+func _run_cascade(done: Callable = Callable()) -> void:
 	_cascade_running = true
 	var first := true
 	while not _pending_pops.is_empty():
@@ -1563,9 +1577,9 @@ func _run_cascade(done: Callable) -> void:
 			return
 		_show_pop(_pending_pops.pop_front())
 	# A last beat so the final number is read before the banner lands on it.
-	await get_tree().create_timer(0.30, true, false, true).timeout
+	await get_tree().create_timer(0.14, true, false, true).timeout
 	_cascade_running = false
-	if is_inside_tree():
+	if is_inside_tree() and done.is_valid():
 		done.call()
 
 
@@ -1589,7 +1603,7 @@ func _show_pop(e: Dictionary) -> void:
 	_juice.popup(at, text, color, _combo_in_shot - 1)
 	_juice.combo(_combo_in_shot)
 	_juice.flash(color, 0.05 + _combo_in_shot * 0.02)
-	_juice.hit_stop(HIT_STOP_LIGHT + _combo_in_shot * 0.012)
+	_juice.hit_stop(0.02 + _combo_in_shot * 0.008)
 	_cam_shake = maxf(_cam_shake, 0.8 + _combo_in_shot * 0.25)
 	_cam_zoom = maxf(_cam_zoom, 0.3)
 	# Each link rings a step higher — the escalation is the reward.
