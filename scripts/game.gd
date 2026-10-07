@@ -35,6 +35,9 @@ enum St { PLACE, AIM, RESOLVE, AI_TURN, WON, LOST }
 const ACTOR_PLAYER := 0
 const ACTOR_AI := 1
 
+const HALO_PLAYER := Color(0.25, 0.62, 1.00)
+const HALO_AI := Color(1.00, 0.28, 0.26)
+
 var state: St = St.PLACE
 var level_idx := 0
 var level: Dictionary
@@ -49,7 +52,8 @@ var ai_bag_used: Array[bool] = []
 var ai_selected := 0
 var turn_actor := ACTOR_PLAYER
 var match_points := [0, 0]
-var is_knockout := false
+var is_versus := false        # player vs AI, alternating turns
+var has_ring := false         # red targets scored by ring-out
 var _ai: MarbleAI = null
 
 var shots_left := 0
@@ -91,7 +95,20 @@ func _ready() -> void:
 	add_child(_audio)
 	_hud = preload("res://scripts/hud.gd").new()
 	add_child(_hud)
-	load_level(0)
+	load_level(_start_level())
+
+
+## `--level N` jumps straight into a level, so a duel can be opened without
+## pressing N five times. Also handy for testing a single stage.
+func _start_level() -> int:
+	var args := OS.get_cmdline_user_args() + OS.get_cmdline_args()
+	for i in args.size():
+		var a: String = args[i]
+		if a.begins_with("--level="):
+			return int(a.substr(8)) - 1
+		if a == "--level" and i + 1 < args.size():
+			return int(args[i + 1]) - 1
+	return 0
 
 
 # §71 — gameplay never queries raw keys; everything goes through actions.
@@ -283,13 +300,14 @@ func load_level(idx: int) -> void:
 		bag_used.append(false)
 	selected = 0
 
-	is_knockout = level["mode"] == "knockout"
+	is_versus = level["mode"] == "duel"
+	has_ring = level["mode"] == "ringer" or level["mode"] == "duel"
 	match_points = [0, 0]
 	turn_actor = ACTOR_PLAYER
 	ai_bag.clear()
 	ai_bag_used.clear()
 	ai_selected = 0
-	if is_knockout:
+	if is_versus:
 		ai_bag.assign(level["ai_bag"])
 		for i in ai_bag.size():
 			ai_bag_used.append(false)
@@ -320,6 +338,8 @@ func _spawn_marble(id: String, pos: Vector3, as_target: bool, owner: int = -1) -
 	_dynamic.add_child(m)
 	m.setup(id, as_target)
 	m.owner_id = owner
+	if owner >= 0 and is_versus:
+		m.set_owner_halo(HALO_PLAYER if owner == ACTOR_PLAYER else HALO_AI)
 	m.position = pos
 	m.settled.connect(_on_marble_settled)
 	m.hit_marble.connect(_on_hit_marble.bind(m))
@@ -526,6 +546,7 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 		shots_left -= 1
 		_advance_selection()
 	_audio.impact(1.2 + _aim_power * 2.5)
+	_aim_power = 0.0      # otherwise the power bar stays full after the shot
 	state = St.RESOLVE
 	_resolve_time = 0.0
 	_stable_time = 0.0
@@ -657,7 +678,7 @@ func _check_captures() -> void:
 			m.mark_captured("lost")
 			# §45 — in Knockout the point goes to the other side regardless of
 			# who knocked it off, including knocking out your own marble.
-			if is_knockout and m.owner_id >= 0:
+			if is_versus and m.owner_id >= 0:
 				match_points[1 - m.owner_id] += 1
 				if m.owner_id == ACTOR_AI:
 					score += 1000
@@ -688,11 +709,17 @@ func _check_captures() -> void:
 
 		# Ring out (§36) — targets only; the player's own marbles are free to
 		# leave the ring (§37).
-		if level["mode"] == "ringer" and m.is_target:
+		if has_ring and m.is_target:
 			if Vector2(p.x, p.z).length() >= RING_OUT_DIST:
 				m.mark_captured("ring_out")
-				progress += 1
-				score += 1000
+				if is_versus:
+					# Only one shot resolves at a time, so whoever is on turn
+					# is the one who caused this.
+					match_points[turn_actor] += 1
+					score += 1000 if turn_actor == ACTOR_PLAYER else 0
+				else:
+					progress += 1
+					score += 1000
 				_shot_ctx["ring_outs"] = _shot_ctx.get("ring_outs", 0) + 1
 				_pop()
 
@@ -716,7 +743,7 @@ func _end_shot() -> void:
 		else:
 			m.shot_this_turn = false
 
-	if is_knockout:
+	if is_versus:
 		_end_knockout_turn()
 		return
 
@@ -737,6 +764,12 @@ func _end_shot() -> void:
 
 # §43-47 — alternate turns until both bags are empty, then compare points.
 func _end_knockout_turn() -> void:
+	# A duel can also finish early: once the last red target is gone there is
+	# nothing left to contest.
+	if has_ring and _live_targets() == 0:
+		_resolve_knockout()
+		return
+
 	var player_done: bool = shots_left <= 0
 	var ai_done := true
 	for u in ai_bag_used:
@@ -759,6 +792,15 @@ func _end_knockout_turn() -> void:
 		_begin_ai_turn()
 	else:
 		state = St.PLACE
+
+
+func _live_targets() -> int:
+	var n := 0
+	for t in targets:
+		if is_instance_valid(t) and t.state != Marble.State.CAPTURED \
+				and t.state != Marble.State.SUNK and t.state != Marble.State.LOST:
+			n += 1
+	return n
 
 
 func _resolve_knockout() -> void:
@@ -900,7 +942,7 @@ func _board_for_ai() -> Dictionary:
 		"launch_zone": zone_for(ACTOR_AI),
 		"half_w": ARENA_W * 0.5,
 		"half_d": ARENA_D * 0.5,
-		"ring_out_dist": RING_OUT_DIST if level["mode"] == "ringer" else 0.0,
+		"ring_out_dist": RING_OUT_DIST if has_ring else 0.0,
 		"holes": PackedVector2Array(holes),
 		"bumpers": bump,
 	}

@@ -120,7 +120,7 @@ func _process(delta: float) -> void:
 
 
 func refresh(g) -> void:
-	if g.is_knockout:
+	if g.is_versus:
 		var ai_left := 0
 		for u in g.ai_bag_used:
 			if not u:
@@ -128,8 +128,13 @@ func refresh(g) -> void:
 		var turn: String = "YOUR TURN" if g.turn_actor == g.ACTOR_PLAYER else "OPPONENT"
 		if g.state == g.St.RESOLVE:
 			turn = ""
-		_top.text = "YOU %d  —  %d AI          SHOTS  %d / %d        %s" % [
-			g.match_points[0], g.match_points[1], g.shots_left, ai_left, turn]
+		elif g.state == g.St.AI_TURN:
+			turn = "OPPONENT THINKING"
+		var reds: String = ("     REDS LEFT  %d" % g._live_targets()) if g.has_ring else ""
+		_top.text = "YOU %d  —  %d AI          SHOTS  %d / %d%s        %s" % [
+			g.match_points[0], g.match_points[1], g.shots_left, ai_left, reds, turn]
+		_score.add_theme_color_override("font_color",
+			g.HALO_PLAYER if g.turn_actor == g.ACTOR_PLAYER else g.HALO_AI)
 	else:
 		var mode: String = "RING OUT" if g.level["mode"] == "ringer" else "SINK"
 		_top.text = "%s  %d / %d          SHOTS  %d" % [mode, g.progress, g.goal, g.shots_left]

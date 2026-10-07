@@ -35,6 +35,7 @@ var _is_settled := true
 var _force_settle := false
 var _force_ramp := 0.0
 var _mesh: MeshInstance3D
+var _halo: MeshInstance3D = null
 var _contact_cooldown := 0.0
 var _pending_linear := Vector3.ZERO
 var _pending_angular := Vector3.ZERO
@@ -219,6 +220,38 @@ func fade_out() -> void:
 	var t := create_tween()
 	t.tween_property(_mesh, "scale", Vector3.ZERO, 0.18)
 	t.tween_callback(queue_free)
+
+
+## Ground ring marking whose marble this is. Drawn on the floor rather than on
+## the sphere, because the sphere is rolling — a mark on the marble itself
+## would tumble and the colour would read as part of the marble.
+func set_owner_halo(color: Color) -> void:
+	_halo = MeshInstance3D.new()
+	var t := TorusMesh.new()
+	t.inner_radius = 0.120
+	t.outer_radius = 0.155
+	t.rings = 24
+	_halo.mesh = t
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 2.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_halo.material_override = mat
+	# top_level so the halo does not tumble with the marble it follows.
+	_halo.top_level = true
+	add_child(_halo)
+
+
+func _process(_delta: float) -> void:
+	if _halo == null:
+		return
+	if state == State.CAPTURED or state == State.SUNK or state == State.LOST:
+		_halo.visible = false
+		return
+	_halo.global_position = global_position - Vector3(0, MarbleData.RADIUS - 0.006, 0)
 
 
 func _on_body_entered(body: Node) -> void:
