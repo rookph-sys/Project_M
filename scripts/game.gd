@@ -57,8 +57,9 @@ var has_ring := false         # red targets scored by ring-out
 var _ai: MarbleAI = null
 
 var shots_left := 0
-var goal := 0
-var progress := 0
+var match_stats := {}
+var prog := Progression.new()
+var last_result := {}
 var score := 0
 
 var marbles: Array[Marble] = []
@@ -86,16 +87,30 @@ var _pull_line: MeshInstance3D
 var _lz_vis: MeshInstance3D
 var _dynamic: Node3D
 var _debug := false
+var _menu: CanvasLayer = null
+var _pending_bag: Array[String] = []
 
 
 func _ready() -> void:
+	prog.load()
 	_register_actions()
 	_build_static_world()
 	_audio = MarbleAudio.new()
 	add_child(_audio)
 	_hud = preload("res://scripts/hud.gd").new()
 	add_child(_hud)
-	load_level(_start_level())
+	_menu = preload("res://scripts/menu.gd").new()
+	add_child(_menu)
+	_menu.setup(prog)
+	_menu.play_requested.connect(_on_play_requested)
+
+	var jump := _start_level()
+	if jump >= 0:
+		_menu.visible = false
+		load_level(jump)
+	else:
+		load_level(0)
+		_menu.show_levels()
 
 
 ## `--level N` jumps straight into a level, so a duel can be opened without
@@ -108,7 +123,7 @@ func _start_level() -> int:
 			return int(a.substr(8)) - 1
 		if a == "--level" and i + 1 < args.size():
 			return int(args[i + 1]) - 1
-	return 0
+	return -1      # no argument: start on the campaign screen
 
 
 # §71 — gameplay never queries raw keys; everything goes through actions.
@@ -128,7 +143,8 @@ func _register_actions() -> void:
 
 	var keys := {
 		"restart": KEY_R, "next_level": KEY_N, "prev_level": KEY_P,
-		"debug": KEY_F1, "quit": KEY_ESCAPE,
+		"debug": KEY_F1, "to_menu": KEY_ESCAPE,
+		"cancel_menu": KEY_ESCAPE, "collection": KEY_C, "confirm": KEY_ENTER,
 	}
 	for name in keys:
 		if InputMap.has_action(name):
@@ -294,7 +310,9 @@ func load_level(idx: int) -> void:
 	targets.clear()
 	holes.clear()
 
-	bag.assign(level["bag"])
+	# A deck chosen in the builder wins; otherwise the level default.
+	bag.assign(_pending_bag if _pending_bag.size() == 8 else level["bag"])
+	_pending_bag.clear()
 	bag_used.clear()
 	for i in bag.size():
 		bag_used.append(false)
@@ -314,8 +332,14 @@ func load_level(idx: int) -> void:
 		_ai = MarbleAI.new(level["ai_level"])
 
 	shots_left = level["shots"]
-	goal = level["goal"]
-	progress = 0
+	match_stats = {
+		"ring_outs": 0, "sinks": 0, "shots_used": 0, "marbles_lost": 0,
+		"bank_shots": 0, "multi_hits": 0, "chain_hits": 0, "knockouts": 0,
+		"magnet_affected": 0, "won_match": false,
+		"direct_hit_by": {}, "ring_out_by": {}, "bank_shot_by": {},
+		"alive_at_end": {},
+	}
+	last_result = {}
 	score = 0
 	_held = null
 	_aiming = false
@@ -330,6 +354,7 @@ func load_level(idx: int) -> void:
 		targets.append(m)
 
 	state = St.PLACE
+	_close_menu()
 	_hud.flash(level["name"], level["hint"])
 
 
@@ -398,8 +423,11 @@ func _spawn_bumper(p: Vector2) -> void:
 # ---------------------------------------------------------------- input ----
 
 func _unhandled_input(ev: InputEvent) -> void:
-	if ev.is_action_pressed("quit"):
-		get_tree().quit()
+	# Esc goes back to the campaign rather than quitting — losing a duel to a
+	# stray keypress is not an acceptable way to leave a match.
+	if ev.is_action_pressed("to_menu"):
+		_open_menu()
+		return
 	if ev.is_action_pressed("debug"):
 		_debug = not _debug
 	if ev.is_action_pressed("restart"):
@@ -527,6 +555,7 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 
 	_shot_ctx = {
 		"marble": m,
+		"marble_id": m.def_id,
 		"aim": _aim_dir,
 		"ability_fired": false,
 		"touched_bank": false,
@@ -546,6 +575,9 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 	else:
 		bag_used[selected] = true
 		shots_left -= 1
+		match_stats["shots_used"] = match_stats.get("shots_used", 0) + 1
+		prog.bump("shots_fired")
+		prog.note_marble_use(m.def_id)
 		_advance_selection()
 	_audio.impact(1.2 + _aim_power * 2.5)
 	_aim_power = 0.0      # otherwise the power bar stays full after the shot
@@ -568,6 +600,9 @@ func _advance_selection() -> void:
 # --------------------------------------------------------------- update ----
 
 func _process(delta: float) -> void:
+	# One source of truth for which layer is showing.
+	if _menu:
+		_hud.visible = not _menu.visible
 	_mouse_world = _mouse_to_table()
 	_lz_vis.visible = state == St.PLACE or state == St.AIM
 
@@ -684,11 +719,14 @@ func _check_captures() -> void:
 				match_points[1 - m.owner_id] += 1
 				if m.owner_id == ACTOR_AI:
 					score += 1000
+					match_stats["knockouts"] += 1
 				else:
 					score -= 250
+					match_stats["marbles_lost"] += 1
 				_pop()
 			elif not m.is_target:
 				score -= 250
+				match_stats["marbles_lost"] += 1
 				_shot_ctx["lost"] = _shot_ctx.get("lost", 0) + 1
 			continue
 
@@ -698,7 +736,7 @@ func _check_captures() -> void:
 				m.mark_captured("sunk")
 				_audio.sink()
 				if m.is_target and level["mode"] == "holes":
-					progress += 1
+					match_stats["sinks"] += 1
 					score += 1000
 					_shot_ctx["sinks"] = _shot_ctx.get("sinks", 0) + 1
 					_pop()
@@ -720,8 +758,12 @@ func _check_captures() -> void:
 					match_points[turn_actor] += 1
 					score += 1000 if turn_actor == ACTOR_PLAYER else 0
 				else:
-					progress += 1
 					score += 1000
+				if turn_actor == ACTOR_PLAYER:
+					match_stats["ring_outs"] += 1
+					var by: String = _shot_ctx.get("marble_id", "")
+					if by != "":
+						match_stats["ring_out_by"][by] = match_stats["ring_out_by"].get(by, 0) + 1
 				_shot_ctx["ring_outs"] = _shot_ctx.get("ring_outs", 0) + 1
 				_pop()
 
@@ -749,19 +791,79 @@ func _end_shot() -> void:
 		_end_knockout_turn()
 		return
 
-	if progress >= goal:
+	# §59 — primary and additional both have to pass.
+	var cleared: bool = Objectives.all_met(level.get("primary", []), match_stats) \
+			and Objectives.all_met(level.get("additional", []), match_stats)
+	if cleared:
 		score += shots_left * 200          # §49 unused shots
-		score += 300                       # §54 perfect finish on the last shot
-		state = St.WON
-		_hud.flash("LEVEL CLEAR", "Score %d  ·  N for next level  ·  R to retry" % score)
+		score += 300                       # §54 perfect finish
+		_finish(true)
 		return
 
-	if shots_left <= 0 or not _objective_still_possible():
-		state = St.LOST
-		_hud.flash("OUT OF SHOTS", "R to retry  ·  N for next level")
+	if shots_left <= 0 or not Objectives.still_possible(
+			level, match_stats, _live_targets(), shots_left):
+		_finish(false)
 		return
 
 	state = St.PLACE
+
+
+## Applies rewards, writes the save, and reports what changed (§25, §55, §65).
+func _finish(won: bool) -> void:
+	_record_survivors()
+	state = St.WON if won else St.LOST
+
+	var earned: int = Objectives.medals_earned(level, match_stats, won)
+	var news: Dictionary = prog.record_result(level_idx, won, score, earned)
+
+	var unlocked_now := ""
+	if won:
+		var reward: Dictionary = level.get("reward", {})
+		if reward.has("deck_builder"):
+			prog.deck_builder_unlocked = true
+			prog.save()
+		if reward.has("unlock") and prog.unlock_marble(reward["unlock"]):
+			unlocked_now = MarbleData.get_def(reward["unlock"])["name"]
+
+	last_result = {
+		"won": won, "score": score, "medals": earned,
+		"unlocked": unlocked_now, "news": news,
+	}
+	_show_result_banner()
+
+
+func _show_result_banner() -> void:
+	var r := last_result
+	if not r["won"]:
+		var why: String = "OUT OF SHOTS" if shots_left <= 0 else "OBJECTIVE FAILED"
+		_hud.flash(why, _objective_summary() + "      [R] retry")
+		return
+
+	var stars := "★".repeat(r["medals"]) + "☆".repeat(3 - r["medals"])
+	var line := "Score %d   %s" % [r["score"], stars]
+	if r["unlocked"] != "":
+		line += "      %s UNLOCKED" % r["unlocked"].to_upper()
+	line += "      [N] next   [R] retry"
+	_hud.flash("LEVEL CLEAR", line)
+
+
+func _objective_summary() -> String:
+	var parts: Array[String] = []
+	for o in level.get("primary", []) + level.get("additional", []):
+		if not Objectives.met(o, match_stats):
+			parts.append(Objectives.describe(o))
+	return "Missed: " + ", ".join(parts) if not parts.is_empty() else ""
+
+
+## Trials ask whether a specific marble is still on the table at the end.
+func _record_survivors() -> void:
+	for m in marbles:
+		if not is_instance_valid(m) or m.owner_id != ACTOR_PLAYER:
+			continue
+		if m.state == Marble.State.CAPTURED or m.state == Marble.State.SUNK \
+				or m.state == Marble.State.LOST:
+			continue
+		match_stats["alive_at_end"][m.def_id] = true
 
 
 # §43-47 — alternate turns until both bags are empty, then compare points.
@@ -808,13 +910,8 @@ func _live_targets() -> int:
 func _resolve_knockout() -> void:
 	var p: int = match_points[ACTOR_PLAYER]
 	var a: int = match_points[ACTOR_AI]
-	if p > a:
-		state = St.WON
-		_hud.flash("MATCH WON", "%d - %d  ·  N for next level  ·  R to retry" % [p, a])
-		return
-	if p < a:
-		state = St.LOST
-		_hud.flash("MATCH LOST", "%d - %d  ·  R to retry" % [p, a])
+	if p != a:
+		_finish_duel(p > a, "%d - %d" % [p, a])
 		return
 
 	# §47 tie-break: whichever side's surviving marbles sit further from an edge.
@@ -831,14 +928,21 @@ func _resolve_knockout() -> void:
 
 	var diff: float = safety[ACTOR_PLAYER] - safety[ACTOR_AI]
 	if absf(diff) < 0.01:
-		state = St.LOST
-		_hud.flash("DRAW", "%d - %d  ·  a draw does not clear the level  ·  R to retry" % [p, a])
-	elif diff > 0.0:
-		state = St.WON
-		_hud.flash("MATCH WON", "%d - %d on safety  ·  N for next level" % [p, a])
+		_finish_duel(false, "%d - %d draw" % [p, a])
 	else:
-		state = St.LOST
-		_hud.flash("MATCH LOST", "%d - %d on safety  ·  R to retry" % [p, a])
+		_finish_duel(diff > 0.0, "%d - %d on edge safety" % [p, a])
+
+
+## A duel is won on points, but the level still has to pass its objectives —
+## `marble_survives` in the Sticky trial, for instance.
+func _finish_duel(points_won: bool, detail: String) -> void:
+	_record_survivors()
+	match_stats["won_match"] = points_won
+	var cleared: bool = points_won \
+			and Objectives.all_met(level.get("primary", []), match_stats) \
+			and Objectives.all_met(level.get("additional", []), match_stats)
+	_finish(cleared)
+	_hud.sub_detail(detail)
 
 
 func _begin_ai_turn() -> void:
@@ -950,16 +1054,6 @@ func _board_for_ai() -> Dictionary:
 	}
 
 
-# §42 — fail immediately once the objective is arithmetically unreachable.
-func _objective_still_possible() -> bool:
-	var live := 0
-	for t in targets:
-		if is_instance_valid(t) and t.state != Marble.State.CAPTURED \
-				and t.state != Marble.State.SUNK and t.state != Marble.State.LOST:
-			live += 1
-	return progress + live >= goal
-
-
 func _score_shot() -> void:
 	if _shot_ctx.is_empty():
 		return
@@ -967,18 +1061,26 @@ func _score_shot() -> void:
 	if scoring == 0:
 		return
 
+	var by: String = _shot_ctx.get("marble_id", "")
+
 	# §51 multi hit — every direct objective-relevant contact after the first.
 	var direct: int = _shot_ctx["direct_targets"].size()
 	if direct >= 2:
 		score += (direct - 1) * 75
+		match_stats["multi_hits"] += 1
 
 	# §50 bank shot — a bank surface touched before the first direct target.
 	if _shot_ctx["touched_bank"]:
 		score += 150
+		match_stats["bank_shots"] += 1
+		if by != "":
+			match_stats["bank_shot_by"][by] = match_stats["bank_shot_by"].get(by, 0) + 1
 
 	# §52 chain — scoring targets the shooter never touched itself.
 	var indirect: int = maxi(0, scoring - direct)
 	score += indirect * 125
+	if indirect > 0:
+		match_stats["chain_hits"] += 1
 
 	_shot_ctx.clear()
 
@@ -1006,6 +1108,8 @@ func _magnet_pulse(src: Marble) -> void:
 		var dist := d.length()
 		if dist >= MarbleData.MAGNET_RADIUS or dist < 0.001:
 			continue
+		if m.is_target and src.owner_id == ACTOR_PLAYER:
+			match_stats["magnet_affected"] += 1
 		var strength := 1.0 - dist / MarbleData.MAGNET_RADIUS
 		var imp := MarbleData.MAGNET_MAX_IMPULSE * strength
 		var dir := Vector3(-d.x, 0, -d.y).normalized()
@@ -1027,6 +1131,9 @@ func _on_hit_marble(other: Marble, speed: float, src: Marble) -> void:
 
 	if _is_objective_relevant(other):
 		_shot_ctx["direct_targets"][other.get_instance_id()] = true
+		if src.owner_id == ACTOR_PLAYER:
+			var id := src.def_id
+			match_stats["direct_hit_by"][id] = match_stats["direct_hit_by"].get(id, 0) + 1
 
 
 func _on_hit_surface(body: Node, speed: float, src: Marble) -> void:
@@ -1138,3 +1245,24 @@ func _ability_burst(at: Vector3, color: Color, max_radius: float) -> void:
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.tween_property(mat, "albedo_color:a", 0.0, 0.34).set_delay(0.06)
 	tw.chain().tween_callback(ring.queue_free)
+
+
+# --------------------------------------------------------------- shell ----
+
+func _on_play_requested(index: int, chosen_bag: Array) -> void:
+	_pending_bag.assign(chosen_bag)
+	load_level(index)
+
+
+func _open_menu() -> void:
+	if _menu == null:
+		return
+	_pending_bag.clear()
+	_menu.show_levels()
+	_hud.visible = false
+
+
+func _close_menu() -> void:
+	if _menu:
+		_menu.visible = false
+	_hud.visible = true

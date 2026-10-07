@@ -24,7 +24,7 @@ func _run() -> void:
 	await physics_frame
 	await physics_frame
 
-	for level_idx in [4, 5]:
+	for level_idx in [7, 9]:      # First Duel (Easy) and Final Table (Normal)
 		print("")
 		var lvl: Dictionary = Levels.ALL[level_idx]
 		print("  %s — AI %s" % [lvl["name"],

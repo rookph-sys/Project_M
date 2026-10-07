@@ -71,8 +71,8 @@ func _gesture(game, label: String) -> void:
 	while game.state == game.St.RESOLVE and waited < 15.0:
 		await process_frame
 		waited += 1.0 / 60.0
-	print("  resolved in %.1fs -> state %s, progress %d/%d, score %d"
-		% [waited, game.St.keys()[game.state], game.progress, game.goal, game.score])
+	print("  resolved in %.1fs -> state %s, rings %d, score %d"
+		% [waited, game.St.keys()[game.state], game.match_stats["ring_outs"], game.score])
 
 
 func _move(pos: Vector2) -> void:

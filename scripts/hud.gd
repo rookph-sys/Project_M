@@ -102,6 +102,10 @@ func _label(size: int, col: Color) -> Label:
 	return l
 
 
+func sub_detail(extra: String) -> void:
+	_sub.text = "%s      %s" % [extra, _sub.text]
+
+
 func flash(title: String, sub: String) -> void:
 	_banner.text = title
 	_sub.text = sub
@@ -136,8 +140,11 @@ func refresh(g) -> void:
 		_score.add_theme_color_override("font_color",
 			g.HALO_PLAYER if g.turn_actor == g.ACTOR_PLAYER else g.HALO_AI)
 	else:
-		var mode: String = "RING OUT" if g.level["mode"] == "ringer" else "SINK"
-		_top.text = "%s  %d / %d          SHOTS  %d" % [mode, g.progress, g.goal, g.shots_left]
+		var goals: Array[String] = []
+		for o in g.level.get("primary", []) + g.level.get("additional", []):
+			var done: bool = Objectives.met(o, g.match_stats)
+			goals.append("%s %s" % ["[x]" if done else "[ ]", Objectives.describe(o)])
+		_top.text = "%s          SHOTS  %d" % ["     ".join(goals), g.shots_left]
 	_score.text = "SCORE  %d" % g.score
 	_power_fill.size.x = 320.0 * g._aim_power
 	_power_fill.color = Color(0.45, 1.0, 0.65).lerp(Color(1.0, 0.35, 0.25), g._aim_power)
@@ -148,6 +155,13 @@ func refresh(g) -> void:
 		var d: Dictionary = MarbleData.get_def(g.bag[g.selected])
 		var ability: String = ("   ·   %s" % d["desc"]) if d["desc"] != "" else ""
 		_info.text = "%s%s" % [d["name"], ability]
+		var secondary: Array[String] = []
+		for o in g.level.get("secondary", []):
+			secondary.append("%s %s" % [
+				"★" if Objectives.met(o, g.match_stats) else "☆",
+				Objectives.describe(o)])
+		if not secondary.is_empty():
+			_info.text += "        " + "   ".join(secondary)
 
 	_debug.visible = g._debug
 	if g._debug:

@@ -231,3 +231,72 @@ godot --headless --script res://tools/ai_test.gd     # AI مسابقه‌ی کا
 - **Anchor** واقعاً Freeze می‌شود، پس Magnet هم نمی‌تواند تکانش دهد. در دید AI جرمش `1000` گزارش می‌شود تا شات‌هایی طراحی نکند که فرض می‌کنند می‌شود هلش داد.
 - **Pinpoint** جهت را از `ShotContext.aim` می‌گیرد، یعنی همان خطی که بازیکن کشیده — نه هندسه‌ی تماس.
 - **Simulator مربوط به AI هنوز قابلیت‌ها را مدل نمی‌کند.** یعنی AI ارزش Heavy و Precision را دست‌کم می‌گیرد. فعلاً عملاً یک هندیکپ است، ولی اگر بعداً AI سخت‌تر لازم شد اولین جایی است که باید اضافه شود.
+
+---
+
+## الحاق ۳ — Phase 5 (Progression) و ۱۰ Level کامل
+
+تصمیم **3D قفل شد.** دوربین ثابت است و همه چیز روی یک صفحه، یعنی عملاً ۲.۵بعدی — ارزان‌ترین نوع سه‌بعدی از نظر آرت.
+
+### Campaign کامل شد
+
+هر ده Level سند (§64) ساخته شد، با Trialها:
+
+| # | Level | Mode | Trial / Reward |
+|---|---|---|---|
+| 1 | First Flick | Ringer | Deck Builder باز می‌شود |
+| 2 | Break the Cluster | Ringer | — |
+| 3 | Precision Trial | Ringer | Precision |
+| 4 | First Hole | Holes | — |
+| 5 | Heavy Trial | Ringer | Heavy |
+| 6 | Around the Wall | Ringer | Rubber |
+| 7 | Magnetic Pull | Holes | Magnet |
+| 8 | First Duel | Duel (Easy) | — |
+| 9 | Hold Your Ground | Duel (Easy) | Sticky |
+| 10 | Final Table | Duel (Normal) | پایان Chapter 1 |
+
+### Objective حالا Data است، نه کد
+
+GDD §19 می‌خواست Objective سیستم Data-Driven باشد. قبلاً `goal` و `progress` داخل حلقه‌ی بازی Hardcode بود. حالا هر Level سه دسته Objective اعلام می‌کند:
+
+```gdscript
+"primary":    [{"type": "ring_out", "count": 3}]
+"additional": [{"type": "marble_hits_target", "marble": "precision"}]
+"secondary":  [{"type": "within_shots", "count": 5}]
+```
+
+`primary` و `additional` هر دو باید پاس شوند تا Level تمام شود؛ `secondary` اختیاری است و هر کدام یک Medal می‌دهد (§65). چهارده نوع Objective تعریف شده.
+
+### Save و Unlock
+
+`user://save.json` — Marbleهای باز شده، Levelهای تمام‌شده، Best Score، Medal، Loadout ذخیره‌شده، و آمار. Best Score فقط روی برد ثبت می‌شود (§55). فایل خراب یا نسخه‌ی قدیمی باعث Crash نمی‌شود، به Default برمی‌گردد — تست شده.
+
+### سه صفحه‌ی جدید
+
+- **Level Select** — Medalها، Best Score، Levelهای قفل، برچسب Trial
+- **Deck Builder** — ۸ Slot، قانون §57 (Standard نامحدود، هر Special یکی)، Loadout ذخیره می‌شود
+- **Collection** — Barهای §27 به‌جای اعداد خام فیزیک، قفل‌ها به شکل `???`
+
+### `Esc` دیگر از بازی خارج نمی‌شود
+
+به Campaign برمی‌گردد. از دست دادن یک دوئل با یک کلید اشتباهی راه قابل‌قبولی برای ترک مسابقه نبود.
+
+### باگی که Validator گرفت
+
+تست `progression_test.gd` چیدمان هر Level را چک می‌کند. سه خوشه (L5، L8، L10) فاصله‌ی مرکزها `0.239`–`0.240` متر داشتند، زیر حداقل `0.25` که برای چیدمان دستی گذاشته بودیم — یعنی در فریم اول Penetration و Jitter می‌دادند. اصلاح شد.
+
+Validator این‌ها را هم چک می‌کند: Objective بدون Bank Surface، Trial که Marbleی را می‌خواهد که در Bag نیست، Bag با اندازه‌ی غلط، و اینکه زنجیره‌ی Unlock واقعاً به هر شش Marble می‌رسد.
+
+### تست‌ها
+
+```bash
+godot --headless --script res://tools/calibrate.gd         # فیزیک
+godot --headless --script res://tools/sim_check.gd         # دقت Simulator
+godot --headless --script res://tools/progression_test.gd  # Save، Objective، Level data
+godot --headless --script res://tools/smoke.gd             # کل حلقه
+godot --headless --script res://tools/ai_test.gd           # AI مسابقه بازی می‌کند
+```
+
+### باقی‌مانده (Phase 6)
+
+Material و VFX نهایی · Slow Motion · Audio Pass · Transition · Accessibility · Controller · Localization

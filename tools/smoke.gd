@@ -89,8 +89,10 @@ func _play(game, idx: int) -> void:
 	if game.state != game.St.WON and game.state != game.St.LOST:
 		_fail += 1
 
-	print("  L%d %-18s  %-5s  progress %d/%d  shots used %d  score %d"
-		% [idx + 1, lvl["name"], outcome, game.progress, game.goal, shots, game.score])
+	print("  L%d %-18s  %-5s  rings %d  sinks %d  shots %d  score %d  medals %d"
+		% [idx + 1, lvl["name"], outcome, game.match_stats["ring_outs"],
+		   game.match_stats["sinks"], shots, game.score,
+		   game.last_result.get("medals", 0)])
 
 
 func _pick_target(game, rng: RandomNumberGenerator) -> Vector2:
