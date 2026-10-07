@@ -95,6 +95,8 @@ var _settings := Settings.new()
 func _ready() -> void:
 	prog.load()
 	_settings.load()
+	if "--unlock-all" in OS.get_cmdline_user_args() + OS.get_cmdline_args():
+		prog.unlock_everything()
 	_register_actions()
 	_build_static_world()
 	_audio = MarbleAudio.new()

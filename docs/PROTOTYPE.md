@@ -455,3 +455,16 @@ Resolution مرحله هم منتظر تمام شدن زنجیره می‌مان
 #### تنظیم
 
 Cascade از `process_always` و `ignore_time_scale` استفاده می‌کند، وگرنه ضرب‌آهنگش را Hit Stop و Slow Motion خودش به هم می‌زدند.
+
+### `--unlock-all`
+
+برای نشان دادن بازی بدون بازی کردن دوباره‌ی کمپین. هر شش Marble، Deck Builder و هر ده Level را باز می‌کند.
+
+```bash
+ProjectMarbles.exe --resolution 1600x900 -- --unlock-all
+ProjectMarbles.exe --resolution 1600x900 -- --unlock-all --level=10
+```
+
+عمداً **روی دیسک ذخیره نمی‌شود** — فقط برای همان اجرا، تا پیشرفت واقعی کسی را بی‌سروصدا بازنویسی نکند.
+
+دو فایل `.cmd` کنار exe هست که همین کار را با دابل‌کلیک انجام می‌دهند.

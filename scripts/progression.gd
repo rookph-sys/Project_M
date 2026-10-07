@@ -21,6 +21,7 @@ var medals: Dictionary = {}          # level_id -> int (0-3)
 var loadouts: Dictionary = {}        # level_id -> Array[String]
 var stats: Dictionary = {}           # §31 lifetime counters
 var deck_builder_unlocked := false
+var unlocked_all_levels := false
 
 
 func _init() -> void:
@@ -34,6 +35,7 @@ func reset() -> void:
 	medals.clear()
 	loadouts.clear()
 	deck_builder_unlocked = false
+	unlocked_all_levels = false
 	stats = {
 		"shots_fired": 0, "targets_hit": 0, "marbles_knocked_out": 0,
 		"marbles_sunk": 0, "bank_shots": 0, "multi_hits": 0,
@@ -56,7 +58,7 @@ func unlock_marble(id: String) -> bool:
 
 ## A level is playable once the one before it is done. Level 1 always is.
 func is_level_unlocked(index: int) -> bool:
-	if index <= 0:
+	if unlocked_all_levels or index <= 0:
 		return true
 	return completed.get(_key(index - 1), false)
 
@@ -181,3 +183,15 @@ func wipe() -> void:
 # round-tripping ints through JSON would silently turn them into floats.
 func _key(index: int) -> String:
 	return "L%02d" % index
+
+
+## Opens everything: every marble, the deck builder, and every level. Driven
+## by `--unlock-all` so the game can be shown off without replaying the
+## campaign first. Deliberately not saved to disk — it lasts for the run, so
+## it cannot quietly overwrite somebody's real progress.
+func unlock_everything() -> void:
+	for id in MarbleData.DEFS:
+		if id != "target" and not (id in unlocked):
+			unlocked.append(id)
+	deck_builder_unlocked = true
+	unlocked_all_levels = true
