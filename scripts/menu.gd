@@ -8,7 +8,7 @@ extends CanvasLayer
 
 signal play_requested(level_index: int, bag: Array)
 
-enum Screen { LEVELS, DECK, COLLECTION, SETTINGS }
+enum Screen { LEVELS, DECK, COLLECTION, SETTINGS, SHOP }
 
 const SLOTS := 8
 
@@ -372,6 +372,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 	elif ev.is_action_pressed("confirm") and screen == Screen.DECK:
 		_on_start()
 		get_viewport().set_input_as_handled()
+	elif ev.is_action_pressed("confirm") and screen == Screen.SHOP:
+		_leave_shop()
+		get_viewport().set_input_as_handled()
 
 
 # --------------------------------------------------------------- settings ----
@@ -550,3 +553,163 @@ func _process(delta: float) -> void:
 	if _preview_marble and visible:
 		_preview_marble.rotate_y(delta * 1.1)
 		_preview_marble.rotate_x(delta * 0.35)
+
+
+# --------------------------------------------------------------- shop ----
+#
+# SPEC-ROGUELIKE §8. Opens after every table, which is what makes a build
+# feel like it is being assembled rather than handed over.
+
+var _shop_run: Run
+var _shop_done: Callable
+var _shop_charms: Array[String] = []
+var _shop_marbles: Array[String] = []
+var _reroll_cost := 2
+
+
+func show_shop(r: Run, on_done: Callable) -> void:
+	_shop_run = r
+	_shop_done = on_done
+	_reroll_cost = 2
+	_restock()
+	_draw_shop()
+
+
+func _restock() -> void:
+	var pool := Charms.pool_for(_shop_run.ante, _shop_run.charms)
+	_shop_charms.clear()
+	for i in 2:
+		if pool.is_empty():
+			break
+		var pick: String = pool[_shop_run.rng.randi() % pool.size()]
+		pool.erase(pick)
+		_shop_charms.append(pick)
+
+	_shop_marbles.clear()
+	var ids: Array[String] = []
+	for id in MarbleData.DEFS:
+		if id != "target" and id != "standard":
+			ids.append(id)
+	if not ids.is_empty():
+		_shop_marbles.append(ids[_shop_run.rng.randi() % ids.size()])
+
+
+func _draw_shop() -> void:
+	screen = Screen.SHOP
+	visible = true
+	_clear_body()
+	var r := _shop_run
+	_title.text = "SHOP"
+	_subtitle.text = "Ante %d  ·  $%d  ·  next: %s, target %s" % [
+		r.ante, r.money, r.table_name(), Game_comma(r.target_score())]
+	_footer.text = "[Enter] next table      charms are permanent for this run"
+
+	_shop_head("CHARMS   %d / %d slots" % [r.charms.size(), r.charm_slots()])
+	for id in _shop_charms:
+		var d: Dictionary = Charms.get_def(id)
+		var afford: bool = r.money >= d["cost"] and r.charms.size() < r.charm_slots()
+		var b := _button("$%-3d  %-16s %s" % [d["cost"], d["name"], d["desc"]], afford)
+		b.add_theme_color_override("font_color", _kind_colour(d["kind"]))
+		b.pressed.connect(_buy_charm.bind(id))
+		_body.add_child(b)
+	if _shop_charms.is_empty():
+		_body.add_child(_label(16, Color(0.4, 0.45, 0.55)))
+
+	_shop_head("MARBLE   bag %d / %d" % [r.bag.size(), Run.BAG_LIMIT])
+	for id in _shop_marbles:
+		var d: Dictionary = MarbleData.get_def(id)
+		var cost := 4
+		var afford: bool = r.money >= cost and r.bag.size() < Run.BAG_LIMIT
+		var owned: int = r.count_in_bag(id)
+		var b := _button("$%-3d  %-16s %s   (you have %d)"
+			% [cost, d["name"], d["desc"], owned], afford)
+		b.add_theme_color_override("font_color", d["color"])
+		b.pressed.connect(_buy_marble.bind(id, cost))
+		_body.add_child(b)
+
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 14)
+	_body.add_child(gap)
+
+	var rr := _button("Reroll the shop   $%d" % _reroll_cost, r.money >= _reroll_cost)
+	rr.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rr.pressed.connect(_reroll)
+	_body.add_child(rr)
+
+	var go := _button("Next table  →", true)
+	go.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	go.pressed.connect(_leave_shop)
+	_body.add_child(go)
+
+	if not r.charms.is_empty():
+		_shop_head("HELD")
+		for id in r.charms:
+			var d: Dictionary = Charms.get_def(id)
+			var row := _label(16, _kind_colour(d["kind"]))
+			row.text = "   %-16s %s" % [d["name"], d["desc"]]
+			row.custom_minimum_size = Vector2(0, 28)
+			_body.add_child(row)
+
+
+func _shop_head(text: String) -> void:
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 16)
+	_body.add_child(gap)
+	var l := _label(16, Color(0.55, 0.62, 0.74))
+	l.text = text
+	_body.add_child(l)
+
+
+func _kind_colour(kind: String) -> Color:
+	match kind:
+		"chips": return Color(0.55, 0.85, 1.00)
+		"mult": return Color(1.00, 0.55, 0.35)
+		"conditional": return Color(1.00, 0.82, 0.35)
+		"economy": return Color(0.60, 0.90, 0.55)
+		"physics": return Color(0.80, 0.55, 1.00)
+	return Color(0.85, 0.88, 0.95)
+
+
+func _buy_charm(id: String) -> void:
+	var cost: int = Charms.get_def(id)["cost"]
+	if _shop_run.money < cost or not _shop_run.add_charm(id):
+		return
+	_shop_run.money -= cost
+	_shop_charms.erase(id)
+	_draw_shop()
+
+
+func _buy_marble(id: String, cost: int) -> void:
+	if _shop_run.money < cost or not _shop_run.add_marble(id):
+		return
+	_shop_run.money -= cost
+	_shop_marbles.erase(id)
+	_draw_shop()
+
+
+func _reroll() -> void:
+	if _shop_run.money < _reroll_cost:
+		return
+	_shop_run.money -= _reroll_cost
+	_reroll_cost += 1          # each one costs more, as it should
+	_restock()
+	_draw_shop()
+
+
+func _leave_shop() -> void:
+	visible = false
+	if _shop_done.is_valid():
+		_shop_done.call()
+
+
+## Thousands separator, mirrored from Game so the shop reads the same.
+static func Game_comma(n: int) -> String:
+	var s := str(n)
+	var out := ""
+	var c := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return out

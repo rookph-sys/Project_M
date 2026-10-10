@@ -10,7 +10,9 @@ extends RefCounted
 const ANTES := 8
 const TABLES_PER_ANTE := 3
 
-const BASE_TARGET := 60.0
+# Ante 1 should be close to free: two plain ring-outs, or one small chain.
+# At 60 a weak opening hand simply could not reach it in five shots.
+const BASE_TARGET := 30.0
 const GROWTH := 1.75
 const TABLE_MULT := [1.0, 1.5, 2.0]        # Small, Big, Boss
 const TABLE_NAME := ["Small Table", "Big Table", "Boss Table"]

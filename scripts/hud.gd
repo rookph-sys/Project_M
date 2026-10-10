@@ -135,6 +135,11 @@ func _process(delta: float) -> void:
 
 
 func refresh(g) -> void:
+	if g.run_mode and g.run:
+		_refresh_run(g)
+		_sync_bag(g)
+		_refresh_debug(g)
+		return
 	if g.is_versus:
 		var ai_left := 0
 		for u in g.ai_bag_used:
@@ -246,3 +251,70 @@ func _sync_bag(g) -> void:
 		l.text = "%d\n%s" % [i + 1, d["name"]]
 		l.add_theme_color_override("font_color",
 			Color(1, 1, 1, 0.25) if g.bag_used[i] else Color(0.05, 0.05, 0.08))
+
+
+## Run HUD: where you are, what you need, and what you are carrying.
+func _refresh_run(g) -> void:
+	var r = g.run
+	var target: int = r.target_score()
+	var pct: float = clampf(float(g.table_score) / maxf(target, 1.0), 0.0, 1.0)
+
+	var boss := ""
+	if r.is_boss():
+		boss = "   ·   %s" % r.boss_def().get("name", "BOSS")
+	_top.text = "ANTE %d/%d   %s%s          SHOTS %d          $%d" % [
+		r.ante, Run.ANTES, r.table_name().to_upper(), boss, g.shots_left, r.money]
+
+	# The number you are chasing, and the one you have.
+	if absf(g.table_score - _shown_score) > 0.5:
+		_shown_score = lerpf(_shown_score, float(g.table_score), 0.22)
+		_score_punch = 1.0
+	else:
+		_shown_score = g.table_score
+	_score.text = "%s  /  %s" % [
+		_commas(int(round(_shown_score))), _commas(target)]
+	_score_punch = maxf(0.0, _score_punch - 0.06)
+	_score.pivot_offset = _score.size * 0.5
+	_score.scale = Vector2.ONE * (1.0 + _score_punch * 0.22)
+	_score.add_theme_color_override("font_color",
+		Color(0.55, 0.95, 0.6) if g.table_score >= target else Color(0.95, 0.82, 0.35))
+
+	# Reuse the power bar as the target gauge: it is already the one wide
+	# horizontal element on screen, and during resolution power means nothing.
+	_power_bg.size.x = 420
+	_power_fill.size.x = 420.0 * (g._aim_power if g.state == g.St.AIM else pct)
+	_power_fill.size.y = 12
+	_power_fill.color = Color(0.45, 1.0, 0.65).lerp(Color(1.0, 0.35, 0.25), g._aim_power) \
+		if g.state == g.St.AIM else Color(0.95, 0.82, 0.35).lerp(Color(0.5, 1.0, 0.6), pct)
+
+	var charms: Array[String] = []
+	for id in r.charms:
+		charms.append(Charms.get_def(id)["name"])
+	_info.text = "   ".join(charms) if not charms.is_empty() else "no charms yet"
+
+
+func _refresh_debug(g) -> void:
+	_debug.visible = g._debug
+	if not g._debug:
+		return
+	_debug.text = "\n".join([
+		"fps            %d" % Engine.get_frames_per_second(),
+		"state          %s" % g.St.keys()[g.state],
+		"table score    %d" % g.table_score,
+		"target         %d" % g.run.target_score(),
+		"hand           %s" % str(g.run.hand),
+		"draw pile      %d" % g.run.draw_pile.size(),
+		"charms         %s" % str(g.run.charms),
+	])
+
+
+static func _commas(n: int) -> String:
+	var s := str(n)
+	var out := ""
+	var c := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return out

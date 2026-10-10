@@ -31,15 +31,15 @@ func _run() -> void:
 	_check("starts at ante 1, small table", "%d/%d" % [r.ante, r.table], "1/0")
 	_check("starts with 8 standard", r.bag.size(), 8)
 	_check("starts with $4", r.money, 4)
-	_check("first target", r.target_score(), 60)
+	_check("first target", r.target_score(), 30)
 
 	r.table = 1
-	_check("big table is 1.5x", r.target_score(), 90)
+	_check("big table is 1.5x", r.target_score(), 45)
 	r.table = 2
-	_check("boss table is 2x", r.target_score(), 120)
+	_check("boss table is 2x", r.target_score(), 60)
 	r.ante = 8
 	r.table = 2
-	_check("final boss target", r.target_score(), 6032)
+	_check("final boss target", r.target_score(), 3016)
 
 	print("")
 	print("  twenty-four tables, then the run is won")

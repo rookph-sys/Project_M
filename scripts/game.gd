@@ -118,6 +118,12 @@ func _ready() -> void:
 	_menu.play_requested.connect(_on_play_requested)
 	_build_fade()
 
+	var args := OS.get_cmdline_user_args() + OS.get_cmdline_args()
+	if "--run" in args:
+		_menu.visible = false
+		start_run()
+		return
+
 	var jump := _start_level()
 	if jump >= 0:
 		_menu.visible = false
@@ -484,6 +490,13 @@ func _unhandled_input(ev: InputEvent) -> void:
 		return
 	if ev.is_action_pressed("debug"):
 		_debug = not _debug
+	if run_mode and ev.is_action_pressed("confirm") \
+			and (state == St.WON or state == St.LOST):
+		_continue_run()
+		return
+	if run_mode and ev.is_action_pressed("restart"):
+		_transition(func(): start_run())
+		return
 	if ev.is_action_pressed("restart"):
 		_transition(func(): load_level(level_idx))
 		return
@@ -610,6 +623,9 @@ func _fire(actor: int = ACTOR_PLAYER) -> void:
 
 	_combo_in_shot = 0
 	_pending_pops.clear()
+	if run_mode:
+		_shot_facts = {"ring_outs": 0, "sinks": 0, "lost": 0, "banked": false,
+					   "marble_id": m.def_id}
 	_shot_ctx = {
 		"marble": m,
 		"marble_id": m.def_id,
@@ -827,7 +843,11 @@ func _check_captures() -> void:
 						_juice.popup(p, "AI +1", HALO_AI, 0)
 						_audio.score_event(0.7)
 					else:
-						_pop(p, 1000, Color(0.5, 0.85, 1.0))
+						if run_mode:
+							_shot_facts["sinks"] = _shot_facts.get("sinks", 0) + 1
+							_pop(p, Scoring.CHIPS_SINK, Color(0.5, 0.85, 1.0))
+						else:
+							_pop(p, 1000, Color(0.5, 0.85, 1.0))
 				elif not m.is_target:
 					score -= 250     # §40
 					match_stats["marbles_lost"] += 1
@@ -841,7 +861,7 @@ func _check_captures() -> void:
 		# Ring out (§36) — targets only; the player's own marbles are free to
 		# leave the ring (§37).
 		if has_ring and m.is_target:
-			if Vector2(p.x, p.z).length() >= RING_OUT_DIST:
+			if Vector2(p.x, p.z).length() >= ring_out_distance():
 				m.mark_captured("ring_out")
 				if is_versus:
 					# Only one shot resolves at a time, so whoever is on turn
@@ -859,6 +879,9 @@ func _check_captures() -> void:
 					_cam_shake = maxf(_cam_shake, 0.5)
 					_audio.score_event(0.7)
 					_ring_pulse()
+				elif run_mode:
+					_shot_facts["ring_outs"] = _shot_facts.get("ring_outs", 0) + 1
+					_pop(p, Scoring.CHIPS_RING_OUT, Color(1.0, 0.85, 0.3))
 				else:
 					_pop(p, 1000, Color(1.0, 0.85, 0.3))
 
@@ -871,6 +894,10 @@ func _pop(at: Vector3 = Vector3.ZERO, points: int = 1000, color: Color = Color(1
 
 func _end_shot() -> void:
 	_score_shot()
+	if run_mode:
+		_end_run_shot()
+		return
+
 
 	# §36 — bodies are only removed once the shot has fully resolved.
 	for m in marbles.duplicate():
@@ -1175,6 +1202,8 @@ func _score_shot() -> void:
 	# §50 bank shot — a bank surface touched before the first direct target.
 	if _shot_ctx["touched_bank"]:
 		score += 150
+		if run_mode:
+			_shot_facts["banked"] = true
 		match_stats["bank_shots"] += 1
 		if by != "":
 			match_stats["bank_shot_by"][by] = match_stats["bank_shot_by"].get(by, 0) + 1
@@ -1593,6 +1622,17 @@ func _show_pop(e: Dictionary) -> void:
 	# flat Multi Hit and Chain bonuses. Making it a real multiplier is a design
 	# change, so the flat Chain bonus is removed below to pay for it: chain
 	# length is now rewarded here and nowhere else.
+	if run_mode:
+		# Chips now, multiplied once the whole shot is known.
+		_juice.popup(at, "+%d chips" % e["points"], color, _combo_in_shot)
+		_juice.flash(color, 0.04 + _combo_in_shot * 0.015)
+		_juice.hit_stop(0.02)
+		_cam_shake = maxf(_cam_shake, 0.7 + _combo_in_shot * 0.2)
+		_audio.score_event(0.9 + _combo_in_shot * 0.18)
+		_spawn_sparks(at, color, 1.0 + _combo_in_shot * 0.25)
+		_juice.combo(_combo_in_shot)
+		return
+
 	var mult: int = _combo_in_shot
 	var gained: int = e["points"] * mult
 	score += gained
@@ -1830,3 +1870,219 @@ func _distance_to_edge(p: Vector2, d: Vector2, vp: Vector2) -> float:
 		var by: float = vp.y if d.y > 0.0 else 0.0
 		best = minf(best, (by - p.y) / d.y)
 	return maxf(best, 0.0) if best < INF else vp.length()
+
+
+# ====================================================== roguelike mode ====
+#
+# SPEC-ROGUELIKE. The table is assembled from the run rather than authored:
+# a layout drawn from the pool, shots and physics bent by the held charms and
+# the ante's boss, and a score target instead of an objective list.
+
+var run: Run = null
+var run_mode := false
+var table_score := 0
+var _shot_facts := {}
+
+
+func start_run(run_seed: int = 0) -> void:
+	run = Run.new()
+	run.start(run_seed)
+	run_mode = true
+	load_table()
+
+
+## Builds the next table from the run state.
+func load_table() -> void:
+	run.begin_table()
+	var arena: Dictionary = Levels.ALL[run.rng.randi() % Levels.count()]
+	var boss: Dictionary = run.boss_def()
+	var scales: Dictionary = Scoring.world_scales(run.charms, boss)
+
+	level = arena
+	level_idx = 0
+	table_score = 0
+	_shot_facts = {}
+
+	for c in _dynamic.get_children():
+		c.queue_free()
+	marbles.clear()
+	targets.clear()
+	holes.clear()
+
+	# The hand is the bag for this table (§ hand).
+	bag.assign(run.hand)
+	bag_used.clear()
+	for i in bag.size():
+		bag_used.append(false)
+	selected = 0
+
+	# Only a boss can put an opponent on the table now.
+	is_versus = boss.has("ai_level")
+	has_ring = arena["mode"] == "ringer"
+	match_points = [0, 0]
+	turn_actor = ACTOR_PLAYER
+	ai_bag.clear()
+	ai_bag_used.clear()
+	ai_selected = 0
+	if is_versus:
+		for i in 8:
+			ai_bag.append("standard")
+			ai_bag_used.append(false)
+		_ai = MarbleAI.new(boss["ai_level"])
+
+	shots_left = run.shots_for_table()
+	match_stats = _fresh_stats()
+	last_result = {}
+	_held = null
+	_aiming = false
+	_slowmo_fired = false
+	_clutch_armed = false
+	_end_slowmo()
+	_pending_pops.clear()
+	_cascade_running = false
+
+	_apply_scales(scales)
+
+	for p in arena["holes"]:
+		holes.append(p)
+		_spawn_hole(p)
+	for p in arena["bumpers"]:
+		_spawn_bumper(p)
+	for p in arena["targets"]:
+		var m := _spawn_marble("target", Vector3(p.x, MarbleData.RADIUS, p.y), true)
+		m.mass *= scales["target_mass"]
+		targets.append(m)
+
+	state = St.PLACE
+	_close_menu()
+	var sub := "Target %s  ·  %d shots" % [_comma(run.target_score()), shots_left]
+	if run.is_boss():
+		sub = "%s — %s      %s" % [boss["name"], boss["desc"], sub]
+	_hud.flash("ANTE %d · %s" % [run.ante, run.table_name()], sub)
+
+
+## Charm and boss physics, applied to the world rather than to the marbles,
+## so nothing has to be un-applied when the table ends.
+func _apply_scales(scales: Dictionary) -> void:
+	_ring_scale = scales["ring"]
+	_friction_scale = scales["friction"]
+	if _ring_mesh:
+		_ring_mesh.scale = Vector3(_ring_scale, 1.0, _ring_scale)
+
+
+var _ring_scale := 1.0
+var _friction_scale := 1.0
+
+
+func ring_out_distance() -> float:
+	return (RING_R * _ring_scale) + MarbleData.RADIUS
+
+
+func _fresh_stats() -> Dictionary:
+	return {
+		"ring_outs": 0, "sinks": 0, "shots_used": 0, "marbles_lost": 0,
+		"bank_shots": 0, "multi_hits": 0, "chain_hits": 0, "knockouts": 0,
+		"magnet_affected": 0, "won_match": false,
+		"direct_hit_by": {}, "ring_out_by": {}, "bank_shot_by": {},
+		"alive_at_end": {},
+	}
+
+
+static func _comma(n: int) -> String:
+	var s := str(n)
+	var out := ""
+	var c := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return out
+
+
+## In run mode the cascade shows chips, and the shot is valued once the chain
+## has finished — chips x mult is a property of the whole shot, not of any one
+## event in it.
+func _finish_shot_scoring() -> void:
+	if not run_mode or _shot_facts.is_empty():
+		return
+	_shot_facts["is_last_shot"] = shots_left <= 0
+	var r: Dictionary = Scoring.score_shot(_shot_facts, run.charms)
+	_shot_facts = {}
+	if r["score"] <= 0:
+		return
+
+	table_score += r["score"]
+	run.money += r["money"]
+
+	# The payoff readout: the two numbers, then what they make together.
+	_juice.popup(Vector3(0, MarbleData.RADIUS, 0),
+		"%d × %.1f" % [r["chips"], r["mult"]], Color(0.65, 0.85, 1.0), 2)
+	await get_tree().create_timer(0.34, true, false, true).timeout
+	if not is_inside_tree():
+		return
+	_juice.popup(Vector3(0, MarbleData.RADIUS, 0),
+		"+%s" % _comma(r["score"]), Color(1.0, 0.88, 0.35), 5)
+	_juice.flash(Color(1.0, 0.9, 0.5), 0.09)
+	_juice.shockwave(Vector3(0, MarbleData.RADIUS, 0), 0.8)
+	_audio.score_event(1.5)
+	_cam_shake = maxf(_cam_shake, 1.2)
+
+
+## Did this table clear, and if not is it still possible?
+func _resolve_table() -> void:
+	if table_score >= run.target_score():
+		var paid: Dictionary = run.clear_table(shots_left)
+		state = St.WON
+		_celebrate()
+		_audio.fanfare()
+		_hud.flash("TABLE CLEARED", "%s / %s      +$%d      [Enter] shop"
+			% [_comma(table_score), _comma(run.target_score()), paid["total"]])
+		return
+
+	if shots_left <= 0:
+		run.fail()
+		state = St.LOST
+		_audio.failure()
+		_hud.flash("RUN OVER", "Ante %d · %s      %s / %s      [R] new run"
+			% [run.ante, run.table_name(), _comma(table_score),
+			   _comma(run.target_score())])
+		return
+
+	state = St.PLACE
+
+
+func _end_run_shot() -> void:
+	# Clear captured bodies first so the table reads clean behind the readout.
+	for m in marbles.duplicate():
+		if not is_instance_valid(m):
+			continue
+		if m.state == Marble.State.CAPTURED or m.state == Marble.State.SUNK \
+				or m.state == Marble.State.LOST:
+			marbles.erase(m)
+			targets.erase(m)
+			m.fade_out()
+		else:
+			m.shot_this_turn = false
+
+	await _finish_shot_scoring()
+	if not is_inside_tree():
+		return
+	_resolve_table()
+
+
+## Advance after a cleared table: shop, then the next one.
+func _continue_run() -> void:
+	if run == null:
+		return
+	if run.phase == Run.Phase.WON:
+		_hud.flash("RUN COMPLETE", "Eight antes cleared.      [R] new run")
+		return
+	if run.phase == Run.Phase.LOST:
+		start_run()
+		return
+	if run.phase == Run.Phase.SHOP:
+		_menu.show_shop(run, func(): _transition(load_table))
+		_hud.visible = false
+		return
+	_transition(load_table)
